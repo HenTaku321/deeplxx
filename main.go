@@ -9,6 +9,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 )
 
 type DeepLReq struct {
@@ -50,10 +52,6 @@ func open() ([]string, error) {
 	i := 0
 	for scanner.Scan() {
 		i++
-		if i > 100 {
-			fmt.Println("默认最多支持100个, 已截取")
-			break
-		}
 		keys = append(keys, scanner.Text())
 	}
 
@@ -172,27 +170,51 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 	}
 }
 
+func runCheck(keys []string) []string {
+	var mu sync.Mutex
+	var aliveKeys []string
+	var wg sync.WaitGroup
+
+	for _, key := range keys {
+		wg.Add(1)
+		go func(k string) {
+			defer wg.Done()
+			isAlive, err := checkAlive(k)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+
+			if isAlive {
+				mu.Lock()
+				aliveKeys = append(aliveKeys, k)
+				mu.Unlock()
+			} else {
+				fmt.Println(k, "不可用")
+			}
+		}(key)
+	}
+
+	wg.Wait()
+	fmt.Printf("一共%d个, 可用%d个\n", len(keys), len(aliveKeys))
+	return aliveKeys
+}
+
 func main() {
 	keys, err := open()
 	if err != nil {
 		panic(err)
 	}
 
-	var aliveKeys []string
-	for _, key := range keys {
-		isAlive, err := checkAlive(key)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
+	aliveKeys := runCheck(keys)
 
-		if isAlive {
-			aliveKeys = append(aliveKeys, key)
-			continue
-		}
-		fmt.Println(key, "不可用")
-	}
+	ticker := time.NewTicker(time.Hour * 3)
+	defer ticker.Stop()
 
-	fmt.Println("一共", len(keys), "个, 存活", len(aliveKeys), "个")
+	go func() {
+		for range ticker.C {
+			aliveKeys = runCheck(keys)
+		}
+	}()
 
 	http.HandleFunc("/", handleForward(aliveKeys))
 
