@@ -60,7 +60,7 @@ func open() ([]string, error) {
 	}
 
 	if scanner.Err() != nil {
-		return nil, err
+		return nil, scanner.Err()
 	}
 
 	return keys, nil
