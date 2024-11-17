@@ -154,10 +154,15 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 			fmt.Println("已删除一个失效的key")
 		}
 
-		dlxResp.Alternatives = make([]string, 1)
-		dlxResp.Code = 200
-		dlxResp.Data = dResp.Translations[0].Text
-		dlxResp.Alternatives[0] = dResp.Translations[0].Text
+		if dResp.Translations != nil {
+			dlxResp.Alternatives = make([]string, 1)
+			dlxResp.Code = 200
+			dlxResp.Data = dResp.Translations[0].Text
+			dlxResp.Alternatives[0] = dResp.Translations[0].Text
+		} else {
+			http.Error(w, dResp.Message, http.StatusBadRequest)
+			return
+		}
 
 		j, err = json.Marshal(dlxResp)
 		if err != nil {
