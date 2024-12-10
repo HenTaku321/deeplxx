@@ -141,6 +141,7 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 		resp, err := client.Do(req)
 		if err != nil {
 			http.Error(w, "出错了", http.StatusGatewayTimeout)
+			return
 		}
 		defer resp.Body.Close()
 
@@ -200,7 +201,7 @@ func runCheck(keys []string) []string {
 	}
 
 	wg.Wait()
-	fmt.Printf("一共%d个, 可用%d个\n", len(keys), len(aliveKeys))
+	fmt.Printf("一共%d个, 存活%d个\n", len(keys), len(aliveKeys))
 	return aliveKeys
 }
 
