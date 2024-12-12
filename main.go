@@ -201,7 +201,7 @@ func runCheck(keys []string) []string {
 	}
 
 	wg.Wait()
-	fmt.Printf("一共%d个, 存活%d个\n", len(keys), len(aliveKeys))
+	fmt.Printf("一共%d个, 可用%d个\n", len(keys), len(aliveKeys))
 	return aliveKeys
 }
 
