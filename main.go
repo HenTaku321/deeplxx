@@ -105,6 +105,11 @@ func checkAlive(key string) (bool, error) {
 
 func handleForward(aliveKeys []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if len(aliveKeys) == 0 {
+			fmt.Println("无可用key")
+			return
+		}
+
 		var (
 			dlxReq  DeepLXReq
 			dReq    DeepLReq
@@ -132,9 +137,9 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 			return
 		}
 
-		key := rand.IntN(len(aliveKeys))
+		randKeyIndex := rand.IntN(len(aliveKeys) - 1)
 
-		req.Header.Set("Authorization", "DeepL-Auth-Key "+aliveKeys[key])
+		req.Header.Set("Authorization", "DeepL-Auth-Key "+aliveKeys[randKeyIndex])
 		req.Header.Set("Content-Type", "application/json")
 
 		client := &http.Client{}
@@ -145,13 +150,13 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 		}
 		defer resp.Body.Close()
 
-		if err := json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
+		if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
 			http.Error(w, dlxReq.Text, http.StatusBadRequest)
 			return
 		}
 
-		if len(dResp.Translations) == 0 {
-			aliveKeys = append(aliveKeys[:key], aliveKeys[key+1:]...)
+		if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
+			aliveKeys = append(aliveKeys[:randKeyIndex], aliveKeys[randKeyIndex+1:]...)
 			fmt.Println("已删除一个失效的key")
 		}
 
