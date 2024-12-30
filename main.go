@@ -103,6 +103,11 @@ func checkAlive(keyOrURL string) (bool, error) {
 			return false, err
 		}
 
+		if resp.StatusCode != http.StatusOK || dlxResp.Code != http.StatusOK {
+			slog.Debug("已删除一个不可用的url", "url", u, "status", resp.Status)
+			return false, nil
+		}
+
 		return true, nil
 	} else {
 		key := keyOrURL
@@ -210,7 +215,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			if len(aliveKeys) == 1 {
 				randKeyIndex = 0
 			} else {
-				randKeyIndex = rand.IntN(len(aliveKeys) - 1)
+				randKeyIndex = rand.IntN(len(aliveKeys))
 			}
 
 			key = aliveKeys[randKeyIndex]
@@ -237,18 +242,18 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			}
 
 			if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
-				aliveKeys = append(aliveKeys[:randKeyIndex], aliveKeys[randKeyIndex+1:]...)
+				aliveKeys = append(aliveKeys[:randKeyIndex-1], aliveKeys[randKeyIndex:]...)
 				slog.Warn("已删除一个余额不足的key", "key", key, "message", dResp.Message)
 				return
 			} else if dResp.Translations == nil {
-				aliveKeys = append(aliveKeys[:randKeyIndex], aliveKeys[randKeyIndex+1:]...)
+				aliveKeys = append(aliveKeys[:randKeyIndex-1], aliveKeys[randKeyIndex:]...)
 				slog.Warn("已删除一个未知原因不可用的key", "key", key, "message", dResp.Message)
 				return
 			}
 
 			if dResp.Translations != nil {
 				dlxResp.Alternatives = make([]string, 1)
-				dlxResp.Code = 200
+				dlxResp.Code = http.StatusOK
 				dlxResp.Data = dResp.Translations[0].Text
 				dlxResp.Alternatives[0] = dResp.Translations[0].Text
 			} else {
@@ -269,7 +274,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			if len(aliveURLs) == 1 {
 				randURLIndex = 0
 			} else {
-				randURLIndex = rand.IntN(len(aliveURLs) - 1)
+				randURLIndex = rand.IntN(len(aliveURLs))
 			}
 
 			u = aliveURLs[randURLIndex]
@@ -288,9 +293,9 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				return
 			}
 
-			if resp.StatusCode != 200 {
-				aliveURLs = append(aliveURLs[:randURLIndex], aliveURLs[randURLIndex+1:]...)
-				slog.Warn("已删除一个未知原因不可用的url", "url", aliveURLs[randURLIndex], "status", resp.Status)
+			if resp.StatusCode != http.StatusOK || dlxResp.Code != http.StatusOK {
+				aliveURLs = append(aliveURLs[:randURLIndex-1], aliveURLs[randURLIndex:]...)
+				slog.Warn("已删除一个不可用的url", "url", aliveURLs[randURLIndex], "status", resp.Status)
 				return
 			}
 		}
