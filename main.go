@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -94,11 +97,19 @@ func checkAlive(key string) (bool, error) {
 	defer resp.Body.Close()
 
 	if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
+		if err == io.EOF {
+			slog.Debug("key已失效", "key", key, "message", err)
+			return false, nil
+		}
 		return false, err
 	}
-	
+
 	if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
-		return false, errors.New(dResp.Message + ", 别删可能是这个月用完了")
+		slog.Debug("key余额不足", "key", key, "message", dResp.Message)
+		return false, nil
+	} else if dResp.Translations == nil {
+		slog.Debug("key未知原因不可用", "key", key, "message", dResp.Message)
+		return false, nil
 	}
 
 	return true, nil
@@ -107,7 +118,7 @@ func checkAlive(key string) (bool, error) {
 func handleForward(aliveKeys []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if len(aliveKeys) == 0 {
-			fmt.Println("无可用key")
+			slog.Error("无可用key")
 			return
 		}
 
@@ -117,7 +128,7 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 			dResp   DeepLResp
 			dlxResp DeepLXResp
 		)
-		
+
 		if err := json.NewDecoder(r.Body).Decode(&dlxReq); err != nil {
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
@@ -153,13 +164,20 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 		defer resp.Body.Close()
 
 		if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
+			if err == io.EOF {
+				slog.Debug("key已失效", "key", aliveKeys[randKeyIndex], "message", err)
+				return
+			}
 			http.Error(w, dlxReq.Text, http.StatusBadRequest)
 			return
 		}
 
 		if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
 			aliveKeys = append(aliveKeys[:randKeyIndex], aliveKeys[randKeyIndex+1:]...)
-			fmt.Println("已删除一个失效的key")
+			slog.Warn("已删除一个余额不足的key", "key", aliveKeys[randKeyIndex], "message", dResp.Message)
+		} else if dResp.Translations == nil {
+			aliveKeys = append(aliveKeys[:randKeyIndex], aliveKeys[randKeyIndex+1:]...)
+			slog.Warn("已删除一个未知原因不可用的key", "key", aliveKeys[randKeyIndex], "message", dResp.Message)
 		}
 
 		if dResp.Translations != nil {
@@ -178,13 +196,12 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 			return
 		}
 
-		fmt.Println(string(j))
+		slog.Debug(string(j))
 		fmt.Fprintln(w, string(j))
 	}
 }
 
 func runCheck(keys []string) []string {
-	var mu sync.Mutex
 	var aliveKeys []string
 	var wg sync.WaitGroup
 
@@ -194,25 +211,25 @@ func runCheck(keys []string) []string {
 			defer wg.Done()
 			isAlive, err := checkAlive(k)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				slog.Error(err.Error())
 			}
 
 			if isAlive {
-				mu.Lock()
 				aliveKeys = append(aliveKeys, k)
-				mu.Unlock()
 			} else {
-				fmt.Println(k, "不可用")
+				slog.Warn("key不可用", "key", k)
 			}
 		}(key)
 	}
 
 	wg.Wait()
-	fmt.Printf("一共%d个, 可用%d个\n", len(keys), len(aliveKeys))
+	slog.Info(fmt.Sprintf("一共%d个, 可用%d个", len(keys), len(aliveKeys)))
 	return aliveKeys
 }
 
 func main() {
+	slog.SetDefault(newLogger(parseArgs()))
+
 	keys, err := open()
 	if err != nil {
 		panic(err)
@@ -231,10 +248,43 @@ func main() {
 
 	http.HandleFunc("/", handleForward(aliveKeys))
 
-	fmt.Println("服务运行在http://localhost:9000")
+	slog.Info("服务运行在http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
 	if err != nil {
 		panic(err)
 	}
+}
 
+func newLogger(enableJSON, enableDebug bool) *slog.Logger {
+	var handler slog.Handler
+
+	handlerOptions := &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Value = slog.StringValue(a.Value.Time().Format(time.DateTime))
+			}
+			return a
+		},
+	}
+
+	if enableDebug {
+		handlerOptions.Level = slog.LevelDebug
+	}
+
+	if enableJSON {
+		handler = slog.NewJSONHandler(os.Stdout, handlerOptions)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, handlerOptions)
+	}
+
+	return slog.New(handler)
+}
+
+func parseArgs() (enableJSONOutput, enableDebug bool) {
+	flag.BoolVar(&enableJSONOutput, "j", false, "输出JSON格式")
+	flag.BoolVar(&enableDebug, "d", false, "输出调试信息")
+
+	flag.Parse()
+
+	return
 }
