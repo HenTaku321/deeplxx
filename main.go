@@ -47,7 +47,7 @@ func open() ([]string, []string, error) {
 	var keys []string
 	var urls []string
 
-	file, err := os.Open("keys.txt")
+	file, err := os.Open("apis.txt")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -66,7 +66,7 @@ func open() ([]string, []string, error) {
 	}
 
 	if isEmpty {
-		return nil, nil, errors.New("keys.txt为空")
+		return nil, nil, errors.New("apis.txt为空")
 	}
 
 	if scanner.Err() != nil {
