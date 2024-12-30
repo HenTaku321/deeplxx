@@ -49,13 +49,13 @@ func open() ([]string, error) {
 
 	scanner := bufio.NewScanner(file)
 
-	i := 0
+	var isEmpty = true
 	for scanner.Scan() {
-		i++
+		isEmpty = false
 		keys = append(keys, scanner.Text())
 	}
 
-	if i == 0 {
+	if isEmpty {
 		return nil, errors.New("keys.txt为空")
 	}
 
@@ -96,7 +96,8 @@ func checkAlive(key string) (bool, error) {
 	if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
 		return false, err
 	}
-	if dResp.Message != "" {
+	
+	if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
 		return false, errors.New(dResp.Message + ", 别删可能是这个月用完了")
 	}
 
@@ -116,6 +117,7 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 			dResp   DeepLResp
 			dlxResp DeepLXResp
 		)
+		
 		if err := json.NewDecoder(r.Body).Decode(&dlxReq); err != nil {
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
