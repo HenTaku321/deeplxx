@@ -288,9 +288,9 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				return
 			}
 
-			if dlxResp.Code != 200 {
+			if resp.StatusCode != 200 {
 				aliveURLs = append(aliveURLs[:randURLIndex], aliveURLs[randURLIndex+1:]...)
-				slog.Warn("已删除一个未知原因不可用的url", "url", aliveKeys[randURLIndex], "code", dlxResp.Code)
+				slog.Warn("已删除一个未知原因不可用的url", "url", aliveURLs[randURLIndex], "status", resp.Status)
 				return
 			}
 		}
