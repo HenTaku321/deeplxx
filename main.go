@@ -150,7 +150,13 @@ func handleForward(aliveKeys []string) http.HandlerFunc {
 			return
 		}
 
-		randKeyIndex := rand.IntN(len(aliveKeys) - 1)
+		var randKeyIndex int
+
+		if len(aliveKeys)-1 == 0 {
+			randKeyIndex = 0
+		} else {
+			randKeyIndex = rand.IntN(len(aliveKeys) - 1)
+		}
 
 		req.Header.Set("Authorization", "DeepL-Auth-Key "+aliveKeys[randKeyIndex])
 		req.Header.Set("Content-Type", "application/json")
