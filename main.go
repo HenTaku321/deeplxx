@@ -210,13 +210,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				return
 			}
 
-			var randKeyIndex int
-
-			if len(aliveKeys) == 1 {
-				randKeyIndex = 0
-			} else {
-				randKeyIndex = rand.IntN(len(aliveKeys))
-			}
+			randKeyIndex := rand.IntN(len(aliveKeys))
 
 			key = aliveKeys[randKeyIndex]
 
@@ -234,7 +228,9 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 
 			if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
 				if err == io.EOF {
-					slog.Debug("key已失效", "key", key, "message", err)
+					aliveKeys[randKeyIndex] = aliveKeys[len(aliveKeys)-1]
+					aliveKeys = aliveKeys[:len(aliveKeys)-1]
+					slog.Debug("已删除一个失效的key", "key", key, "message", err)
 					return
 				}
 				http.Error(w, dlxReq.Text, http.StatusBadRequest)
@@ -242,12 +238,12 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			}
 
 			if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
-				aliveKeys[randKeyIndex-1] = aliveKeys[len(aliveKeys)-1]
+				aliveKeys[randKeyIndex] = aliveKeys[len(aliveKeys)-1]
 				aliveKeys = aliveKeys[:len(aliveKeys)-1]
 				slog.Warn("已删除一个余额不足的key", "key", key, "message", dResp.Message)
 				return
 			} else if dResp.Translations == nil {
-				aliveKeys[randKeyIndex-1] = aliveKeys[len(aliveKeys)-1]
+				aliveKeys[randKeyIndex] = aliveKeys[len(aliveKeys)-1]
 				aliveKeys = aliveKeys[:len(aliveKeys)-1]
 				slog.Warn("已删除一个未知原因不可用的key", "key", key, "message", dResp.Message)
 				return
@@ -271,13 +267,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				return
 			}
 
-			var randURLIndex int
-
-			if len(aliveURLs) == 1 {
-				randURLIndex = 0
-			} else {
-				randURLIndex = rand.IntN(len(aliveURLs))
-			}
+			randURLIndex := rand.IntN(len(aliveURLs))
 
 			u = aliveURLs[randURLIndex]
 
@@ -296,7 +286,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			}
 
 			if resp.StatusCode != http.StatusOK || dlxResp.Code != http.StatusOK {
-				aliveURLs[randURLIndex-1] = aliveURLs[len(aliveURLs)-1]
+				aliveURLs[randURLIndex] = aliveURLs[len(aliveURLs)-1]
 				aliveURLs = aliveURLs[:len(aliveURLs)-1]
 				slog.Warn("已删除一个不可用的url", "url", aliveURLs[randURLIndex], "status", resp.Status)
 				return
@@ -316,6 +306,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 }
 
 func runCheck(keys, urls []string) ([]string, []string) {
+	var mu sync.Mutex
 	var aliveKeys []string
 	var aliveURLs []string
 	var wg sync.WaitGroup
@@ -327,10 +318,13 @@ func runCheck(keys, urls []string) ([]string, []string) {
 			isAlive, err := checkAlive(k)
 			if err != nil {
 				slog.Error(err.Error())
+				return
 			}
 
 			if isAlive {
+				mu.Lock()
 				aliveKeys = append(aliveKeys, k)
+				mu.Unlock()
 			} else {
 				slog.Warn("key不可用", "key", k)
 			}
@@ -344,10 +338,13 @@ func runCheck(keys, urls []string) ([]string, []string) {
 			isAlive, err := checkAlive(u)
 			if err != nil {
 				slog.Error(err.Error())
+				return
 			}
 
 			if isAlive {
+				mu.Lock()
 				aliveURLs = append(aliveURLs, u)
+				mu.Unlock()
 			} else {
 				slog.Warn("url不可用", "url", u)
 			}
@@ -355,7 +352,9 @@ func runCheck(keys, urls []string) ([]string, []string) {
 	}
 
 	wg.Wait()
-	slog.Info(fmt.Sprintf("一共%d个key, 可用%d个key, 一共%d个url, 可用%d个url", len(keys), len(aliveKeys), len(urls), len(aliveURLs)))
+
+	slog.Info(fmt.Sprintf("一共%d个key, 可用%d个key, 一共%d个url, 可用%d个url",
+		len(keys), len(aliveKeys), len(urls), len(aliveURLs)))
 
 	return aliveKeys, aliveURLs
 }
@@ -398,7 +397,6 @@ func newLogger(enableJSON, enableDebug bool) *slog.Logger {
 			}
 			return a
 		},
-		AddSource: true,
 	}
 
 	if enableDebug {
