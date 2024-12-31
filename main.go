@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -154,6 +155,9 @@ func checkAlive(keyOrURL string) (bool, error) {
 
 		dResp, err := dReq.post(keyOrURL)
 		if err != nil {
+			if err == io.EOF {
+				slog.Debug("key无效", "key", keyOrURL, "message", err)
+			}
 			return false, nil
 		}
 
@@ -164,6 +168,7 @@ func checkAlive(keyOrURL string) (bool, error) {
 			slog.Debug("key未知原因不可用", "key", keyOrURL, "message", dResp.Message)
 			return false, nil
 		}
+
 	}
 
 	return true, nil
@@ -313,7 +318,7 @@ func main() {
 
 	aliveKeys, aliveURLs := runCheck(keys, urls)
 
-	ticker := time.NewTicker(time.Hour * 3)
+	ticker := time.NewTicker(time.Hour * 2)
 	defer ticker.Stop()
 
 	go func() {
