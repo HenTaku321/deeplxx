@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -43,7 +42,61 @@ type DeepLXResp struct {
 	Alternatives []string `json:"alternatives"`
 }
 
-func open() ([]string, []string, error) {
+func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
+	j, err := json.Marshal(dlxReq)
+	if err != nil {
+		return DeepLXResp{}, err
+	}
+
+	resp, err := http.Post(u, "application/json", bytes.NewReader(j))
+	if err != nil {
+		return DeepLXResp{}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return DeepLXResp{}, errors.New(resp.Status)
+	}
+
+	dlxResp := DeepLXResp{}
+
+	if err = json.NewDecoder(resp.Body).Decode(&dlxResp); err != nil {
+		return DeepLXResp{}, err
+	}
+
+	return dlxResp, nil
+}
+
+func (dReq DeepLReq) post(key string) (DeepLResp, error) {
+	j, err := json.Marshal(dReq)
+	if err != nil {
+		return DeepLResp{}, err
+	}
+
+	req, err := http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
+	if err != nil {
+		return DeepLResp{}, err
+	}
+	req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return DeepLResp{}, err
+	}
+	defer resp.Body.Close()
+
+	dResp := DeepLResp{}
+
+	if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
+		return DeepLResp{}, err
+	}
+
+	return dResp, nil
+}
+
+func parseKeysAndURLs() ([]string, []string, error) {
 	var keys []string
 	var urls []string
 
@@ -78,7 +131,6 @@ func open() ([]string, []string, error) {
 
 func checkAlive(keyOrURL string) (bool, error) {
 	if strings.HasPrefix(keyOrURL, "http") {
-		u := keyOrURL
 
 		dlxReq := DeepLXReq{
 			Text:       "test",
@@ -86,71 +138,30 @@ func checkAlive(keyOrURL string) (bool, error) {
 			TargetLang: "zh",
 		}
 
-		dlxResp := DeepLXResp{}
+		dlxResp, err := dlxReq.post(keyOrURL)
 
-		j, err := json.Marshal(dlxReq)
-		if err != nil {
-			return false, err
-		}
-
-		resp, err := http.Post(u, "application/json", bytes.NewReader(j))
-		if err != nil {
-			return false, nil // 无需返回错误信息
-		}
-		defer resp.Body.Close()
-
-		if err = json.NewDecoder(resp.Body).Decode(&dlxResp); err != nil {
-			return false, err
-		}
-
-		if resp.StatusCode != http.StatusOK || dlxResp.Code != http.StatusOK {
-			slog.Debug("已删除一个不可用的url", "url", u, "status", resp.Status)
-			return false, nil
+		if err != nil || dlxResp.Code != http.StatusOK {
+			slog.Debug("url不可用", "url", keyOrURL, "message", err)
+			return false, nil // 无需返回错误
 		}
 
 		return true, nil
 	} else {
-		key := keyOrURL
-
 		dReq := DeepLReq{
 			Text:       []string{"test"},
 			TargetLang: "zh",
 		}
 
-		dResp := DeepLResp{}
-
-		j, err := json.Marshal(dReq)
+		dResp, err := dReq.post(keyOrURL)
 		if err != nil {
-			return false, err
-		}
-
-		req, err := http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
-		if err != nil {
-			return false, err
-		}
-		req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
-		req.Header.Set("Content-Type", "application/json")
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			return false, err
-		}
-		defer resp.Body.Close()
-
-		if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
-			if err == io.EOF {
-				slog.Debug("key已失效", "key", key, "message", err)
-				return false, nil
-			}
-			return false, err
+			return false, nil
 		}
 
 		if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
-			slog.Debug("key余额不足", "key", key, "message", dResp.Message)
+			slog.Debug("key余额不足", "key", keyOrURL, "message", dResp.Message)
 			return false, nil
 		} else if dResp.Translations == nil {
-			slog.Debug("key未知原因不可用", "key", key, "message", dResp.Message)
+			slog.Debug("key未知原因不可用", "key", keyOrURL, "message", dResp.Message)
 			return false, nil
 		}
 	}
@@ -178,117 +189,54 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 
 		var (
 			dlxReq  DeepLXReq
-			dReq    DeepLReq
-			dResp   DeepLResp
 			dlxResp DeepLXResp
+			err     error
 		)
 
 		var key, u string
 
-		if err := json.NewDecoder(r.Body).Decode(&dlxReq); err != nil {
+		if err = json.NewDecoder(r.Body).Decode(&dlxReq); err != nil {
 			slog.Warn("请求体无效")
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
 		}
 
 		if use == 0 {
+			keyIndex := rand.IntN(len(aliveKeys))
+			key = aliveKeys[keyIndex]
+
+			dReq := DeepLReq{}
 			dReq.Text = make([]string, 1)
 			dReq.TargetLang = dlxReq.TargetLang
 			dReq.Text[0] = dlxReq.Text
 
-			j, err := json.Marshal(dReq)
+			dResp, err := dReq.post(key)
 			if err != nil {
-				slog.Error(err.Error())
-				http.Error(w, "出错了", http.StatusInternalServerError)
-				return
-			}
-
-			req, err := http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
-			if err != nil {
-				slog.Error(err.Error())
-				http.Error(w, "出错了", http.StatusInternalServerError)
-				return
-			}
-
-			randKeyIndex := rand.IntN(len(aliveKeys))
-
-			key = aliveKeys[randKeyIndex]
-
-			req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
-			req.Header.Set("Content-Type", "application/json")
-
-			client := &http.Client{}
-			resp, err := client.Do(req)
-			if err != nil {
-				slog.Error(err.Error())
-				http.Error(w, "出错了", http.StatusGatewayTimeout)
-				return
-			}
-			defer resp.Body.Close()
-
-			if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
-				if err == io.EOF {
-					aliveKeys[randKeyIndex] = aliveKeys[len(aliveKeys)-1]
-					aliveKeys = aliveKeys[:len(aliveKeys)-1]
-					slog.Debug("已删除一个失效的key", "key", key, "message", err)
-					return
-				}
-				http.Error(w, dlxReq.Text, http.StatusBadRequest)
-				return
-			}
-
-			if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
-				aliveKeys[randKeyIndex] = aliveKeys[len(aliveKeys)-1]
-				aliveKeys = aliveKeys[:len(aliveKeys)-1]
-				slog.Warn("已删除一个余额不足的key", "key", key, "message", dResp.Message)
-				return
-			} else if dResp.Translations == nil {
-				aliveKeys[randKeyIndex] = aliveKeys[len(aliveKeys)-1]
-				aliveKeys = aliveKeys[:len(aliveKeys)-1]
-				slog.Warn("已删除一个未知原因不可用的key", "key", key, "message", dResp.Message)
-				return
-			}
-
-			if dResp.Translations != nil {
-				dlxResp.Alternatives = make([]string, 1)
-				dlxResp.Code = http.StatusOK
-				dlxResp.Data = dResp.Translations[0].Text
-				dlxResp.Alternatives[0] = dResp.Translations[0].Text
-			} else {
-				slog.Error("转发失败", "message", dResp.Message)
+				slog.Warn("删除一个不可用的key", "key", key, "message", dResp.Message)
 				http.Error(w, dResp.Message, http.StatusBadRequest)
+
+				aliveKeys[keyIndex] = aliveKeys[len(aliveKeys)-1]
+				aliveKeys = aliveURLs[:len(aliveKeys)-1]
+
 				return
 			}
+
+			dlxResp.Alternatives = make([]string, 1)
+			dlxResp.Code = http.StatusOK
+			dlxResp.Data = dResp.Translations[0].Text
+			dlxResp.Alternatives[0] = dResp.Translations[0].Text
 		} else {
-			j, err := json.Marshal(dlxReq)
-			if err != nil {
-				slog.Error(err.Error())
-				http.Error(w, "出错了", http.StatusInternalServerError)
-				return
-			}
+			urlIndex := rand.IntN(len(aliveURLs))
+			u = aliveURLs[urlIndex]
 
-			randURLIndex := rand.IntN(len(aliveURLs))
+			dlxResp, err = dlxReq.post(u)
+			if err != nil || dlxResp.Code != http.StatusOK {
+				slog.Warn("删除一个不可用的url", "url", u, "message", err.Error())
+				http.Error(w, err.Error(), http.StatusBadRequest)
 
-			u = aliveURLs[randURLIndex]
-
-			resp, err := http.Post(u, "application/json", bytes.NewReader(j))
-			if err != nil {
-				slog.Error(err.Error())
-				http.Error(w, "出错了", http.StatusGatewayTimeout)
-				return
-			}
-			defer resp.Body.Close()
-
-			if err = json.NewDecoder(resp.Body).Decode(&dlxResp); err != nil {
-				slog.Error(err.Error())
-				http.Error(w, "出错了", http.StatusInternalServerError)
-				return
-			}
-
-			if resp.StatusCode != http.StatusOK || dlxResp.Code != http.StatusOK {
-				aliveURLs[randURLIndex] = aliveURLs[len(aliveURLs)-1]
+				aliveURLs[urlIndex] = aliveURLs[len(aliveURLs)-1]
 				aliveURLs = aliveURLs[:len(aliveURLs)-1]
-				slog.Warn("已删除一个不可用的url", "url", aliveURLs[randURLIndex], "status", resp.Status)
+
 				return
 			}
 		}
@@ -325,8 +273,6 @@ func runCheck(keys, urls []string) ([]string, []string) {
 				mu.Lock()
 				aliveKeys = append(aliveKeys, k)
 				mu.Unlock()
-			} else {
-				slog.Warn("key不可用", "key", k)
 			}
 		}(key)
 	}
@@ -345,8 +291,6 @@ func runCheck(keys, urls []string) ([]string, []string) {
 				mu.Lock()
 				aliveURLs = append(aliveURLs, u)
 				mu.Unlock()
-			} else {
-				slog.Warn("url不可用", "url", u)
 			}
 		}(url)
 	}
@@ -362,7 +306,7 @@ func runCheck(keys, urls []string) ([]string, []string) {
 func main() {
 	slog.SetDefault(newLogger(parseArgs()))
 
-	keys, urls, err := open()
+	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
 		panic(err)
 	}
