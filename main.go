@@ -54,7 +54,7 @@ func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
 		return DeepLXResp{}, err
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
 	resp, err := client.Do(req)
 	if err != nil {
 		return DeepLXResp{}, err
@@ -347,7 +347,7 @@ func main() {
 
 	aliveKeys, aliveURLs := runCheck(keys, urls)
 
-	ticker := time.NewTicker(time.Hour * 2)
+	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 
 	go func() {
