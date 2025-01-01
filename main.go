@@ -231,7 +231,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				http.Error(w, dResp.Message, http.StatusBadRequest)
 
 				aliveKeys[keyIndex] = aliveKeys[len(aliveKeys)-1]
-				aliveKeys = aliveURLs[:len(aliveKeys)-1]
+				aliveKeys = aliveKeys[:len(aliveKeys)-1]
 
 				return
 			}
