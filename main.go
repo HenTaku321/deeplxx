@@ -51,7 +51,7 @@ func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
 
 	resp, err := http.Post(u, "application/json", bytes.NewReader(j))
 	if err != nil {
-		return DeepLXResp{}, nil
+		return DeepLXResp{}, err
 	}
 	defer resp.Body.Close()
 
@@ -152,7 +152,11 @@ func checkAlive(keyOrURL string) (bool, error) {
 		dlxResp, err := dlxReq.post(keyOrURL)
 
 		if err != nil || dlxResp.Code != http.StatusOK {
-			slog.Debug("url不可用", "url", keyOrURL, "message", err)
+			if err != nil {
+				slog.Debug("url不可用", "url", keyOrURL, "message", err)
+			} else {
+				slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
+			}
 			return false, nil // 无需返回错误
 		}
 
@@ -185,7 +189,11 @@ func checkAlive(keyOrURL string) (bool, error) {
 }
 
 func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
+	var mu sync.Mutex
 	return func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
 		if len(aliveKeys) == 0 && len(aliveURLs) == 0 {
 			slog.Error("无可用key和url")
 			http.Error(w, "无可用key和url", http.StatusInternalServerError)
@@ -246,8 +254,13 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 
 			dlxResp, err = dlxReq.post(u)
 			if err != nil || dlxResp.Code != http.StatusOK {
-				slog.Warn("删除一个不可用的url", "url", u, "message", err.Error())
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				if err != nil {
+					slog.Warn("删除一个不可用的url", "url", u, "message", err.Error())
+					http.Error(w, err.Error(), http.StatusBadRequest)
+				} else {
+					slog.Warn("删除一个不可用的url", "url", u, "message", "http状态码不等于200")
+					http.Error(w, "http状态码不等于200", http.StatusBadRequest)
+				}
 
 				aliveURLs[urlIndex] = aliveURLs[len(aliveURLs)-1]
 				aliveURLs = aliveURLs[:len(aliveURLs)-1]
