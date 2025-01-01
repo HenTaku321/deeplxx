@@ -241,8 +241,13 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 
 			dResp, err := dReq.post(key)
 			if err != nil {
-				slog.Warn("删除一个不可用的key", "key", key, "message", dResp.Message)
-				http.Error(w, dResp.Message, http.StatusBadRequest)
+				if dResp.Message == "" {
+					slog.Warn("删除一个不可用的key", "key", key, "message", err.Error())
+					http.Error(w, err.Error(), http.StatusBadRequest)
+				} else {
+					slog.Warn("删除一个不可用的key", "key", key, "message", dResp.Message)
+					http.Error(w, dResp.Message, http.StatusBadRequest)
+				}
 
 				aliveKeys[keyIndex] = aliveKeys[len(aliveKeys)-1]
 				aliveKeys = aliveKeys[:len(aliveKeys)-1]
@@ -342,6 +347,9 @@ func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+
+		slog.Debug(r.RemoteAddr + "请求了该端点")
+
 		keys, urls, err := parseKeysAndURLs()
 		if err != nil {
 			slog.Error(err.Error())
