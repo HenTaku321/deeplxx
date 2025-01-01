@@ -337,12 +337,35 @@ func runCheck(keys, urls []string) ([]string, []string) {
 	return aliveKeys, aliveURLs
 }
 
+func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
+	var mu sync.Mutex
+	return func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		keys, urls, err := parseKeysAndURLs()
+		if err != nil {
+			slog.Error(err.Error())
+			return
+		}
+
+		aliveKeys, aliveURLs = runCheck(keys, urls)
+
+		_, err = w.Write([]byte(fmt.Sprintf("一共%d个key, 可用%d个key, 一共%d个url, 可用%d个url\n",
+			len(keys), len(aliveKeys), len(urls), len(aliveURLs))))
+		if err != nil {
+			slog.Warn(err.Error())
+			return
+		}
+	}
+}
+
 func main() {
 	slog.SetDefault(newLogger(parseArgs()))
 
 	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
-		panic(err)
+		slog.Error(err.Error())
+		return
 	}
 
 	aliveKeys, aliveURLs := runCheck(keys, urls)
@@ -357,6 +380,7 @@ func main() {
 	}()
 
 	http.HandleFunc("/", handleForward(aliveKeys, aliveURLs))
+	http.HandleFunc("/check-alive", handleCheckAlive(aliveKeys, aliveURLs))
 
 	slog.Info("服务运行在http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
