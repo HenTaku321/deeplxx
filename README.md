@@ -1,14 +1,14 @@
 ## 介绍
-使多个DeepL Free API可以通过DeepLX调用, 调用顺序为随机
+使多个DeepL Free/Pro API可以通过DeepLX调用, 调用顺序为随机
 
 更新: 现已支持混合其他DeepLX API
 
-当你拥有很多个DeepL free API或DeepLX API时, 这个程序就很有用
+当你拥有很多个DeepL Free/Pro API或DeepLX API时, 这个程序就很有用
 
 ## 注意
-只适用于DeeplX而不是DeepL
+只适用于DeeplX调用而不是DeepL
 
-在部署前请编辑apis.txt, 一行填入一个DeepL Free API或DeepLX API
+在部署前请编辑apis.txt, 一行填入一个DeepL Free/Pro API或DeepLX API
 
 ## 部署
 
