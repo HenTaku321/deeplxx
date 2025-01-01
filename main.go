@@ -195,11 +195,7 @@ func checkAlive(keyOrURL string) (bool, error) {
 }
 
 func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
-	var mu sync.Mutex
 	return func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-
 		if len(aliveKeys) == 0 && len(aliveURLs) == 0 {
 			slog.Error("无可用key和url")
 			http.Error(w, "无可用key和url", http.StatusInternalServerError)
@@ -230,9 +226,13 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			return
 		}
 
+		var mu sync.RWMutex
+
 		if use == 0 {
+			mu.RLock()
 			keyIndex := rand.IntN(len(aliveKeys))
 			key = aliveKeys[keyIndex]
+			mu.RUnlock()
 
 			dReq := DeepLReq{}
 			dReq.Text = make([]string, 1)
@@ -249,8 +249,10 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 					http.Error(w, dResp.Message, http.StatusBadRequest)
 				}
 
+				mu.Lock()
 				aliveKeys[keyIndex] = aliveKeys[len(aliveKeys)-1]
 				aliveKeys = aliveKeys[:len(aliveKeys)-1]
+				mu.Unlock()
 
 				return
 			}
@@ -260,8 +262,10 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			dlxResp.Data = dResp.Translations[0].Text
 			dlxResp.Alternatives[0] = dResp.Translations[0].Text
 		} else {
+			mu.RLock()
 			urlIndex := rand.IntN(len(aliveURLs))
 			u = aliveURLs[urlIndex]
+			mu.RUnlock()
 
 			dlxResp, err = dlxReq.post(u)
 			if err != nil || dlxResp.Code != http.StatusOK {
@@ -273,8 +277,10 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 					http.Error(w, "http状态码不等于200", http.StatusBadRequest)
 				}
 
+				mu.Lock()
 				aliveURLs[urlIndex] = aliveURLs[len(aliveURLs)-1]
 				aliveURLs = aliveURLs[:len(aliveURLs)-1]
+				mu.Unlock()
 
 				return
 			}
@@ -343,11 +349,7 @@ func runCheck(keys, urls []string) ([]string, []string) {
 }
 
 func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
-	var mu sync.Mutex
 	return func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-
 		slog.Debug(r.RemoteAddr + "请求了该端点")
 
 		keys, urls, err := parseKeysAndURLs()
@@ -356,7 +358,11 @@ func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
 			return
 		}
 
+		var mu sync.Mutex
+
+		mu.Lock()
 		aliveKeys, aliveURLs = runCheck(keys, urls)
+		mu.Unlock()
 
 		_, err = w.Write([]byte(fmt.Sprintf("一共%d个key, 可用%d个key, 一共%d个url, 可用%d个url\n",
 			len(keys), len(aliveKeys), len(urls), len(aliveURLs))))
