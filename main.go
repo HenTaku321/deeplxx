@@ -74,10 +74,20 @@ func (dReq DeepLReq) post(key string) (DeepLResp, error) {
 		return DeepLResp{}, err
 	}
 
-	req, err := http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
-	if err != nil {
-		return DeepLResp{}, err
+	var req *http.Request
+
+	if strings.HasSuffix(key, ":fx") {
+		req, err = http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
+		if err != nil {
+			return DeepLResp{}, err
+		}
+	} else {
+		req, err = http.NewRequest("POST", "https://api.deepl.com/v2/translate", bytes.NewReader(j))
+		if err != nil {
+			return DeepLResp{}, err
+		}
 	}
+
 	req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
 	req.Header.Set("Content-Type", "application/json")
 
