@@ -49,7 +49,13 @@ func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
 		return DeepLXResp{}, err
 	}
 
-	resp, err := http.Post(u, "application/json", bytes.NewReader(j))
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(j))
+	if err != nil {
+		return DeepLXResp{}, err
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return DeepLXResp{}, err
 	}
