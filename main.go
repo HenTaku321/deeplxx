@@ -363,7 +363,7 @@ func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
 		aliveKeys, aliveURLs = runCheck(keys, urls)
 		mu.Unlock()
 
-		_, err = w.Write([]byte(fmt.Sprintf("可用数量检查, 总共key数量%d, 可用key数量%d, 总共url%d数量, 可用url%d数量\n",
+		_, err = w.Write([]byte(fmt.Sprintf("可用数量检查, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
 			len(keys), len(aliveKeys), len(urls), len(aliveURLs))))
 		if err != nil {
 			slog.Warn(err.Error())
