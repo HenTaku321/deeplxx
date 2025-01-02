@@ -194,12 +194,12 @@ func checkAlive(keyOrURL string) (bool, error) {
 	return true, nil
 }
 
-func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
+func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var mu sync.RWMutex
 
 		mu.RLock()
-		if len(aliveKeys) == 0 && len(aliveURLs) == 0 {
+		if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
 			slog.Error("无可用key和url")
 			http.Error(w, "无可用key和url", http.StatusInternalServerError)
 			return
@@ -209,11 +209,11 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 		var use int // 0 = key, 1 = url
 
 		mu.RLock()
-		if len(aliveKeys) > 0 && len(aliveURLs) > 0 {
+		if len(*aliveKeys) > 0 && len(*aliveURLs) > 0 {
 			use = rand.IntN(2)
-		} else if len(aliveKeys) == 0 {
+		} else if len(*aliveKeys) == 0 {
 			use = 1
-		} else if len(aliveURLs) == 0 {
+		} else if len(*aliveURLs) == 0 {
 			use = 0
 		}
 		mu.RUnlock()
@@ -234,8 +234,8 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 
 		if use == 0 {
 			mu.RLock()
-			keyIndex := rand.IntN(len(aliveKeys))
-			key = aliveKeys[keyIndex]
+			keyIndex := rand.IntN(len(*aliveKeys))
+			key = (*aliveKeys)[keyIndex]
 			mu.RUnlock()
 
 			dReq := DeepLReq{}
@@ -254,8 +254,8 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				}
 
 				mu.Lock()
-				aliveKeys[keyIndex] = aliveKeys[len(aliveKeys)-1]
-				aliveKeys = aliveKeys[:len(aliveKeys)-1]
+				(*aliveKeys)[keyIndex] = (*aliveKeys)[len(*aliveKeys)-1]
+				*aliveKeys = (*aliveKeys)[:len(*aliveKeys)-1]
 				mu.Unlock()
 
 				return
@@ -267,8 +267,8 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			dlxResp.Alternatives[0] = dResp.Translations[0].Text
 		} else {
 			mu.RLock()
-			urlIndex := rand.IntN(len(aliveURLs))
-			u = aliveURLs[urlIndex]
+			urlIndex := rand.IntN(len(*aliveURLs))
+			u = (*aliveURLs)[urlIndex]
 			mu.RUnlock()
 
 			dlxResp, err = dlxReq.post(u)
@@ -282,8 +282,8 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 				}
 
 				mu.Lock()
-				aliveURLs[urlIndex] = aliveURLs[len(aliveURLs)-1]
-				aliveURLs = aliveURLs[:len(aliveURLs)-1]
+				(*aliveURLs)[urlIndex] = (*aliveURLs)[len(*aliveURLs)-1]
+				*aliveURLs = (*aliveURLs)[:len(*aliveURLs)-1]
 				mu.Unlock()
 
 				return
@@ -351,7 +351,7 @@ func runCheck(keys, urls []string) ([]string, []string) {
 	return aliveKeys, aliveURLs
 }
 
-func handleCheckAlive(aliveKeys, aliveURLs []string) http.HandlerFunc {
+func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + "请求了该端点")
 
@@ -364,11 +364,11 @@ func handleCheckAlive(aliveKeys, aliveURLs []string) http.HandlerFunc {
 		var mu sync.Mutex
 
 		mu.Lock()
-		aliveKeys, aliveURLs = runCheck(keys, urls)
+		*aliveKeys, *aliveURLs = runCheck(keys, urls)
 		mu.Unlock()
 
 		_, err = w.Write([]byte(fmt.Sprintf("可用数量检查, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
-			len(keys), len(aliveKeys), len(urls), len(aliveURLs))))
+			len(keys), len(*aliveKeys), len(urls), len(*aliveURLs))))
 		if err != nil {
 			slog.Warn(err.Error())
 			return
@@ -396,8 +396,8 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/", handleForward(aliveKeys, aliveURLs))
-	http.HandleFunc("/check-alive", handleCheckAlive(aliveKeys, aliveURLs))
+	http.HandleFunc("/", handleForward(&aliveKeys, &aliveURLs))
+	http.HandleFunc("/check-alive", handleCheckAlive(&aliveKeys, &aliveURLs))
 
 	slog.Info("服务运行在http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
