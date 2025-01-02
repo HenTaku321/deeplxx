@@ -196,14 +196,19 @@ func checkAlive(keyOrURL string) (bool, error) {
 
 func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var mu sync.RWMutex
+
+		mu.RLock()
 		if len(aliveKeys) == 0 && len(aliveURLs) == 0 {
 			slog.Error("无可用key和url")
 			http.Error(w, "无可用key和url", http.StatusInternalServerError)
 			return
 		}
+		mu.RUnlock()
 
 		var use int // 0 = key, 1 = url
 
+		mu.RLock()
 		if len(aliveKeys) > 0 && len(aliveURLs) > 0 {
 			use = rand.IntN(2)
 		} else if len(aliveKeys) == 0 {
@@ -211,6 +216,7 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 		} else if len(aliveURLs) == 0 {
 			use = 0
 		}
+		mu.RUnlock()
 
 		var (
 			dlxReq  DeepLXReq
@@ -225,8 +231,6 @@ func handleForward(aliveKeys, aliveURLs []string) http.HandlerFunc {
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
 		}
-
-		var mu sync.RWMutex
 
 		if use == 0 {
 			mu.RLock()
@@ -347,7 +351,7 @@ func runCheck(keys, urls []string) ([]string, []string) {
 	return aliveKeys, aliveURLs
 }
 
-func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
+func handleCheckAlive(aliveKeys, aliveURLs []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + "请求了该端点")
 
