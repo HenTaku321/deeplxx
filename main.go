@@ -54,7 +54,7 @@ func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
 		return DeepLXResp{}, err
 	}
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return DeepLXResp{}, err
@@ -342,8 +342,7 @@ func runCheck(keys, urls []string) ([]string, []string) {
 
 	wg.Wait()
 
-	slog.Info(fmt.Sprintf("一共%d个key, 可用%d个key, 一共%d个url, 可用%d个url",
-		len(keys), len(aliveKeys), len(urls), len(aliveURLs)))
+	slog.Info("可用数量检查", "总共key数量", len(keys), "可用key数量", len(aliveKeys), "总共url数量", len(urls), "可用url数量", len(aliveURLs))
 
 	return aliveKeys, aliveURLs
 }
@@ -364,7 +363,7 @@ func handleCheckAlive(aliveKeys []string, aliveURLs []string) http.HandlerFunc {
 		aliveKeys, aliveURLs = runCheck(keys, urls)
 		mu.Unlock()
 
-		_, err = w.Write([]byte(fmt.Sprintf("一共%d个key, 可用%d个key, 一共%d个url, 可用%d个url\n",
+		_, err = w.Write([]byte(fmt.Sprintf("可用数量检查, 总共key数量%d, 可用key数量%d, 总共url%d数量, 可用url%d数量\n",
 			len(keys), len(aliveKeys), len(urls), len(aliveURLs))))
 		if err != nil {
 			slog.Warn(err.Error())
