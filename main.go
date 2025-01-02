@@ -54,7 +54,7 @@ func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
 		return DeepLXResp{}, err
 	}
 
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return DeepLXResp{}, err
