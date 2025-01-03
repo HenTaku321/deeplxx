@@ -12,4 +12,4 @@ COPY --from=builder /main /main
 
 EXPOSE 9000
 
-CMD ["/main"]
+CMD ["/main -c"]
