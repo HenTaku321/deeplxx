@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -205,7 +207,123 @@ func checkAlive(keyOrURL string) (bool, error) {
 	return true, nil
 }
 
-func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
+var isChecking bool
+var errIsChecking = errors.New("正在检测中")
+
+func runCheck() (int, int, []string, []string, error) {
+	if isChecking {
+		return 0, 0, nil, nil, errIsChecking
+	}
+
+	isChecking = true
+	defer func() { isChecking = false }()
+
+	keys, urls, err := parseKeysAndURLs()
+	if err != nil {
+		slog.Error(err.Error())
+		return 0, 0, nil, nil, err
+	}
+
+	var mu sync.Mutex
+	var aliveKeys []string
+	var aliveURLs []string
+	var wg sync.WaitGroup
+
+	for _, key := range keys {
+		wg.Add(1)
+		go func(k string) {
+			defer wg.Done()
+			isAlive, err := checkAlive(k)
+			if err != nil {
+				slog.Error(err.Error())
+				return
+			}
+
+			if isAlive {
+				mu.Lock()
+				aliveKeys = append(aliveKeys, k)
+				mu.Unlock()
+			}
+		}(key)
+	}
+
+	for _, url := range urls {
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			isAlive, err := checkAlive(u)
+			if err != nil {
+				slog.Error(err.Error())
+				return
+			}
+
+			if isAlive {
+				mu.Lock()
+				aliveURLs = append(aliveURLs, u)
+				mu.Unlock()
+			}
+		}(url)
+	}
+
+	wg.Wait()
+
+	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(aliveKeys), "总共url数量", len(urls), "可用url数量", len(aliveURLs))
+
+	return len(keys), len(urls), aliveKeys, aliveURLs, nil
+}
+
+func containsChinese(text string) bool {
+	re := regexp.MustCompile(`\p{Han}`)
+	return re.MatchString(text)
+}
+
+var errGoogleTranslateFailed = errors.New("谷歌翻译失败")
+
+func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) {
+	var text []string
+	var result []interface{}
+
+	u := "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
+		sourceLang + "&tl=" + targetLang + "&dt=t&q=" + url.QueryEscape(sourceText)
+
+	resp, err := http.Get(u)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
+	if bReq {
+		return "", errGoogleTranslateFailed
+	}
+
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		return "", errGoogleTranslateFailed
+	}
+
+	if len(result) > 0 {
+		inner := result[0]
+		for _, slice := range inner.([]interface{}) {
+			for _, translatedText := range slice.([]interface{}) {
+				text = append(text, fmt.Sprintf("%v", translatedText))
+				break
+			}
+		}
+		cText := strings.Join(text, "")
+
+		return cText, nil
+	} else {
+		return "", errGoogleTranslateFailed
+	}
+}
+
+func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var mu sync.RWMutex
 		var err error
@@ -324,6 +442,18 @@ func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 			}
 		}
 
+		if enableCheckContainsChinese {
+			if !containsChinese(dlxResp.Data) {
+				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "message", dlxResp.Data)
+				googleTranslateText, err := googleTranslate(dlxReq.Text, dlxReq.SourceLang, dlxReq.TargetLang)
+				if err != nil {
+					slog.Warn("谷歌翻译失败", "message", err.Error())
+				} else {
+					dlxResp.Data = googleTranslateText
+				}
+			}
+		}
+
 		j, err := json.Marshal(dlxResp)
 		if err != nil {
 			slog.Error(err.Error())
@@ -331,74 +461,13 @@ func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 			return
 		}
 
-		slog.Debug(dlxResp.Data, "key", key, "url", u)
+		if enableCheckContainsChinese {
+			slog.Debug(dlxResp.Data, "key", "", "url", "", "usedGoogleTranslate", true)
+		} else {
+			slog.Debug(dlxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false)
+		}
 		fmt.Fprintln(w, string(j))
 	}
-}
-
-var isChecking bool
-var errIsChecking = errors.New("正在检测中")
-
-func runCheck() (int, int, []string, []string, error) {
-	if isChecking {
-		return 0, 0, nil, nil, errIsChecking
-	}
-
-	isChecking = true
-	defer func() { isChecking = false }()
-
-	keys, urls, err := parseKeysAndURLs()
-	if err != nil {
-		slog.Error(err.Error())
-		return 0, 0, nil, nil, err
-	}
-
-	var mu sync.Mutex
-	var aliveKeys []string
-	var aliveURLs []string
-	var wg sync.WaitGroup
-
-	for _, key := range keys {
-		wg.Add(1)
-		go func(k string) {
-			defer wg.Done()
-			isAlive, err := checkAlive(k)
-			if err != nil {
-				slog.Error(err.Error())
-				return
-			}
-
-			if isAlive {
-				mu.Lock()
-				aliveKeys = append(aliveKeys, k)
-				mu.Unlock()
-			}
-		}(key)
-	}
-
-	for _, url := range urls {
-		wg.Add(1)
-		go func(u string) {
-			defer wg.Done()
-			isAlive, err := checkAlive(u)
-			if err != nil {
-				slog.Error(err.Error())
-				return
-			}
-
-			if isAlive {
-				mu.Lock()
-				aliveURLs = append(aliveURLs, u)
-				mu.Unlock()
-			}
-		}(url)
-	}
-
-	wg.Wait()
-
-	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(aliveKeys), "总共url数量", len(urls), "可用url数量", len(aliveURLs))
-
-	return len(keys), len(urls), aliveKeys, aliveURLs, nil
 }
 
 func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
@@ -434,7 +503,8 @@ func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 }
 
 func main() {
-	slog.SetDefault(newLogger(parseArgs()))
+	enableJSONOutput, enableDebug, enableCheckContainsChinese := parseArgs()
+	slog.SetDefault(newLogger(enableJSONOutput, enableDebug))
 
 	_, _, aliveKeys, aliveURLs, err := runCheck()
 	if err != nil {
@@ -458,7 +528,7 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/", handleForward(&aliveKeys, &aliveURLs))
+	http.HandleFunc("/", handleForward(&aliveKeys, &aliveURLs, enableCheckContainsChinese))
 	http.HandleFunc("/check-alive", handleCheckAlive(&aliveKeys, &aliveURLs))
 
 	slog.Info("服务运行在http://localhost:9000")
@@ -493,9 +563,10 @@ func newLogger(enableJSON, enableDebug bool) *slog.Logger {
 	return slog.New(handler)
 }
 
-func parseArgs() (enableJSONOutput, enableDebug bool) {
+func parseArgs() (enableJSONOutput, enableDebug, enableCheckContainsChinese bool) {
 	flag.BoolVar(&enableJSONOutput, "j", false, "输出JSON格式")
 	flag.BoolVar(&enableDebug, "d", false, "输出调试信息")
+	flag.BoolVar(&enableCheckContainsChinese, "c", false, "检测是否漏译, 目标语言非中文请勿启用")
 
 	flag.Parse()
 
