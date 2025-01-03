@@ -129,16 +129,18 @@ func parseKeysAndURLs() ([]string, []string, error) {
 
 	var isEmpty = true
 	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "#") || strings.HasPrefix(scanner.Text(), "//") {
+		text := strings.TrimSpace(scanner.Text())
+
+		if strings.HasPrefix(text, "#") || strings.HasPrefix(text, "//") {
 			continue
 		}
 
 		isEmpty = false
 
-		if strings.HasPrefix(scanner.Text(), "http") {
-			urls = append(urls, scanner.Text())
+		if strings.HasPrefix(text, "http") {
+			urls = append(urls, text)
 		} else {
-			keys = append(keys, scanner.Text())
+			keys = append(keys, text)
 		}
 	}
 
