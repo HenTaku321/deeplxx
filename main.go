@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -31,9 +32,10 @@ type DeepLResp struct {
 }
 
 type DeepLXReq struct {
-	Text       string `json:"text"`
-	SourceLang string `json:"source_lang"`
-	TargetLang string `json:"target_lang"`
+	Text        string `json:"text"`
+	SourceLang  string `json:"source_lang"`
+	TargetLang  string `json:"target_lang"`
+	TagHandling string `json:"tag_handling"`
 }
 
 type DeepLXResp struct {
@@ -230,6 +232,10 @@ func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 			slog.Warn("请求体无效")
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
+		}
+
+		if dlxReq.TagHandling == "html" {
+			dlxReq.Text = html.EscapeString(dlxReq.Text)
 		}
 
 		if use == 0 {
