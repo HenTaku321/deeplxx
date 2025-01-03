@@ -442,6 +442,8 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 			}
 		}
 
+		var usedGoogleTranslate bool
+
 		if enableCheckContainsChinese {
 			if !containsChinese(dlxResp.Data) {
 				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "message", dlxResp.Data)
@@ -450,6 +452,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 					slog.Warn("谷歌翻译失败", "message", err.Error())
 				} else {
 					dlxResp.Data = googleTranslateText
+					usedGoogleTranslate = true
 				}
 			}
 		}
@@ -462,7 +465,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 		}
 
 		if enableCheckContainsChinese {
-			slog.Debug(dlxResp.Data, "key", "", "url", "", "usedGoogleTranslate", true)
+			slog.Debug(dlxResp.Data, "key", key, "url", u, "usedGoogleTranslate", usedGoogleTranslate)
 		} else {
 			slog.Debug(dlxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false)
 		}
