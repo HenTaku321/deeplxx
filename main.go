@@ -208,14 +208,38 @@ func checkAlive(keyOrURL string) (bool, error) {
 func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var mu sync.RWMutex
+		var err error
 
 		mu.RLock()
 		if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
-			slog.Error("无可用key和url")
-			http.Error(w, "无可用key和url", http.StatusInternalServerError)
-			return
+			mu.RUnlock()
+
+			slog.Debug("无可用key和url, 开始检测")
+
+			mu.Lock()
+			_, _, *aliveKeys, *aliveURLs, err = runCheck()
+			mu.Unlock()
+			if err != nil {
+				if errors.Is(err, errIsChecking) {
+					slog.Debug("已在检测中")
+					http.Error(w, "无可用key和url", http.StatusInternalServerError)
+					return
+				}
+
+				slog.Error(err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			mu.RLock()
+			if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
+				mu.RUnlock()
+				slog.Error("无可用key和url")
+				http.Error(w, "无可用key和url", http.StatusInternalServerError)
+				return
+			}
+			mu.RUnlock()
 		}
-		mu.RUnlock()
 
 		var use int // 0 = key, 1 = url
 
@@ -232,7 +256,6 @@ func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 		var (
 			dlxReq  DeepLXReq
 			dlxResp DeepLXResp
-			err     error
 		)
 
 		var key, u string
@@ -313,7 +336,23 @@ func handleForward(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 	}
 }
 
-func runCheck(keys, urls []string) ([]string, []string) {
+var isChecking bool
+var errIsChecking = errors.New("正在检测中")
+
+func runCheck() (int, int, []string, []string, error) {
+	if isChecking {
+		return 0, 0, nil, nil, errIsChecking
+	}
+
+	isChecking = true
+	defer func() { isChecking = false }()
+
+	keys, urls, err := parseKeysAndURLs()
+	if err != nil {
+		slog.Error(err.Error())
+		return 0, 0, nil, nil, err
+	}
+
 	var mu sync.Mutex
 	var aliveKeys []string
 	var aliveURLs []string
@@ -357,29 +396,36 @@ func runCheck(keys, urls []string) ([]string, []string) {
 
 	wg.Wait()
 
-	slog.Info("可用数量检查", "总共key数量", len(keys), "可用key数量", len(aliveKeys), "总共url数量", len(urls), "可用url数量", len(aliveURLs))
+	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(aliveKeys), "总共url数量", len(urls), "可用url数量", len(aliveURLs))
 
-	return aliveKeys, aliveURLs
+	return len(keys), len(urls), aliveKeys, aliveURLs, nil
 }
 
 func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + "请求了该端点")
 
-		keys, urls, err := parseKeysAndURLs()
-		if err != nil {
-			slog.Error(err.Error())
-			return
-		}
-
 		var mu sync.Mutex
+		var totalKeys, totalURLs int
+		var err error
 
 		mu.Lock()
-		*aliveKeys, *aliveURLs = runCheck(keys, urls)
+		totalKeys, totalURLs, *aliveKeys, *aliveURLs, err = runCheck()
+		if err != nil {
+			if errors.Is(err, errIsChecking) {
+				slog.Warn("已在检测中")
+				http.Error(w, "已在检测中, 请稍后重试", http.StatusServiceUnavailable)
+				return
+			}
+
+			slog.Warn(err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		mu.Unlock()
 
-		_, err = w.Write([]byte(fmt.Sprintf("可用数量检查, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
-			len(keys), len(*aliveKeys), len(urls), len(*aliveURLs))))
+		_, err = w.Write([]byte(fmt.Sprintf("可用数量检测, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
+			totalKeys, len(*aliveKeys), totalURLs, len(*aliveURLs))))
 		if err != nil {
 			slog.Warn(err.Error())
 			return
@@ -390,20 +436,25 @@ func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 func main() {
 	slog.SetDefault(newLogger(parseArgs()))
 
-	keys, urls, err := parseKeysAndURLs()
+	_, _, aliveKeys, aliveURLs, err := runCheck()
 	if err != nil {
 		slog.Error(err.Error())
 		return
 	}
-
-	aliveKeys, aliveURLs := runCheck(keys, urls)
 
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 
 	go func() {
 		for range ticker.C {
-			aliveKeys, aliveURLs = runCheck(keys, urls)
+			_, _, aliveKeys, aliveURLs, err = runCheck()
+			if err != nil {
+				if errors.Is(err, errIsChecking) {
+					slog.Warn("已在检测中")
+					return
+				}
+				slog.Error(err.Error())
+			}
 		}
 	}()
 
