@@ -56,7 +56,7 @@ func (dlxReq DeepLXReq) post(u string) (DeepLXResp, error) {
 		return DeepLXResp{}, err
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return DeepLXResp{}, err
@@ -129,7 +129,12 @@ func parseKeysAndURLs() ([]string, []string, error) {
 
 	var isEmpty = true
 	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "#") || strings.HasPrefix(scanner.Text(), "//") {
+			continue
+		}
+
 		isEmpty = false
+
 		if strings.HasPrefix(scanner.Text(), "http") {
 			urls = append(urls, scanner.Text())
 		} else {
@@ -150,7 +155,6 @@ func parseKeysAndURLs() ([]string, []string, error) {
 
 func checkAlive(keyOrURL string) (bool, error) {
 	if strings.HasPrefix(keyOrURL, "http") {
-
 		dlxReq := DeepLXReq{
 			Text:       "test",
 			SourceLang: "en",
@@ -159,13 +163,16 @@ func checkAlive(keyOrURL string) (bool, error) {
 
 		dlxResp, err := dlxReq.post(keyOrURL)
 
-		if err != nil || dlxResp.Code != http.StatusOK {
+		if err != nil {
 			if err != nil {
 				slog.Debug("url不可用", "url", keyOrURL, "message", err)
-			} else {
-				slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
 			}
 			return false, nil // 无需返回错误
+		}
+
+		if dlxResp.Code != http.StatusOK {
+			slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
+			return false, nil
 		}
 
 		return true, nil
