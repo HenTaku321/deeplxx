@@ -452,7 +452,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 
 		if enableCheckContainsChinese {
 			if !containsChinese(dlxResp.Data) {
-				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "message", dlxResp.Data)
+				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "text", dlxResp.Data)
 
 				var googleTranslateText string
 
