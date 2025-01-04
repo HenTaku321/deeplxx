@@ -326,10 +326,15 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, time.Du
 
 func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		reqBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			slog.Error(err.Error())
+			return
+		}
+
 	reTranslate:
 
 		var mu sync.RWMutex
-		var err error
 
 		mu.RLock()
 		if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
@@ -360,6 +365,8 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 				return
 			}
 			mu.RUnlock()
+		} else {
+			mu.RUnlock()
 		}
 
 		var use int // 0 = key, 1 = url
@@ -382,7 +389,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 
 		var key, u string
 
-		if err = json.NewDecoder(r.Body).Decode(&dlxReq); err != nil {
+		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&dlxReq); err != nil {
 			slog.Warn("请求体无效")
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
@@ -405,10 +412,8 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 			if err != nil {
 				if dResp.Message == "" {
 					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", dlxReq.Text)
-					http.Error(w, err.Error(), http.StatusBadRequest)
 				} else {
 					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", dResp.Message, "text", dlxReq.Text)
-					http.Error(w, dResp.Message, http.StatusBadRequest)
 				}
 
 				mu.Lock()
@@ -433,10 +438,8 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 			if err != nil || dlxResp.Code != http.StatusOK {
 				if err != nil {
 					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", dlxReq.Text)
-					http.Error(w, err.Error(), http.StatusBadRequest)
 				} else {
 					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", dlxReq.Text)
-					http.Error(w, "http状态码不等于200", http.StatusBadRequest)
 				}
 
 				mu.Lock()
