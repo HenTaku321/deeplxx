@@ -326,6 +326,8 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, time.Du
 
 func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+	reTranslate:
+
 		var mu sync.RWMutex
 		var err error
 
@@ -333,7 +335,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 		if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
 			mu.RUnlock()
 
-			slog.Debug("无可用key和url, 开始检测")
+			slog.Debug("无可用key和url, 开始重新检测")
 
 			mu.Lock()
 			_, _, *aliveKeys, *aliveURLs, err = runCheck()
@@ -402,10 +404,10 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 			dResp, duration, err = dReq.post(key)
 			if err != nil {
 				if dResp.Message == "" {
-					slog.Warn("删除一个不可用的key", "key", key, "message", err.Error())
+					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", dlxReq.Text)
 					http.Error(w, err.Error(), http.StatusBadRequest)
 				} else {
-					slog.Warn("删除一个不可用的key", "key", key, "message", dResp.Message)
+					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", dResp.Message, "text", dlxReq.Text)
 					http.Error(w, dResp.Message, http.StatusBadRequest)
 				}
 
@@ -414,7 +416,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 				*aliveKeys = (*aliveKeys)[:len(*aliveKeys)-1]
 				mu.Unlock()
 
-				return
+				goto reTranslate
 			}
 
 			dlxResp.Alternatives = make([]string, 1)
@@ -430,10 +432,10 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 			dlxResp, duration, err = dlxReq.post(u)
 			if err != nil || dlxResp.Code != http.StatusOK {
 				if err != nil {
-					slog.Warn("删除一个不可用的url", "url", u, "message", err.Error())
+					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", dlxReq.Text)
 					http.Error(w, err.Error(), http.StatusBadRequest)
 				} else {
-					slog.Warn("删除一个不可用的url", "url", u, "message", "http状态码不等于200")
+					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", dlxReq.Text)
 					http.Error(w, "http状态码不等于200", http.StatusBadRequest)
 				}
 
@@ -442,7 +444,7 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 				*aliveURLs = (*aliveURLs)[:len(*aliveURLs)-1]
 				mu.Unlock()
 
-				return
+				goto reTranslate
 			}
 		}
 
