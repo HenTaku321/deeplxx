@@ -23,3 +23,5 @@ go build main.go && nohup ./main &
 
 ## 使用
 和DeepLX一致
+
+请求localhost:9000/check-alive可重新测活一次
