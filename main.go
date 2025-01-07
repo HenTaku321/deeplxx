@@ -412,9 +412,9 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			dlxReq   DeepLXReq
 			dlxResp  DeepLXResp
 			duration time.Duration
-		)
 
-		var key, u string
+			key, u string
+		)
 
 		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&dlxReq); err != nil {
 			slog.Warn("请求体无效")
@@ -509,7 +509,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Debug(r.RemoteAddr + "请求了该端点")
+		slog.Debug(r.RemoteAddr + "请求测活")
 
 		totalKeys, totalURLs, err := runCheck(saku)
 		if err != nil {
