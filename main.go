@@ -126,16 +126,25 @@ func (dReq DeepLReq) post(key string) (DeepLResp, time.Duration, error) {
 	return dResp, endTime, nil
 }
 
-func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURLIndex int) {
-	saku.mu.Lock()
-	defer saku.mu.Unlock()
+func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) {
+	var slice *[]string
 
+	saku.mu.RLock()
 	if isKey {
-		saku.keys[keyOrURLIndex] = saku.keys[len(saku.keys)-1]
-		saku.keys = saku.keys[:len(saku.keys)-1]
+		slice = &saku.keys
 	} else {
-		saku.urls[keyOrURLIndex] = saku.urls[len(saku.urls)-1]
-		saku.urls = saku.urls[:len(saku.urls)-1]
+		slice = &saku.urls
+	}
+	saku.mu.RUnlock()
+
+	for i, v := range *slice {
+		if v == keyOrURL {
+			saku.mu.Lock()
+			(*slice)[i] = (*slice)[len(*slice)-1]
+			*slice = (*slice)[:len(*slice)-1]
+			saku.mu.Unlock()
+			return
+		}
 	}
 }
 
@@ -434,7 +443,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", dResp.Message, "text", dlxReq.Text)
 				}
 
-				saku.removeKeyOrURL(true, keyIndex)
+				saku.removeKeyOrURL(true, key)
 
 				goto reTranslate
 			}
@@ -457,7 +466,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", dlxReq.Text)
 				}
 
-				saku.removeKeyOrURL(false, urlIndex)
+				saku.removeKeyOrURL(false, u)
 
 				goto reTranslate
 			}
