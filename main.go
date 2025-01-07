@@ -188,26 +188,8 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	return keys, urls, nil
 }
 
-func checkAlive(keyOrURL string) (bool, error) {
-	if strings.HasPrefix(keyOrURL, "http") {
-		dlxReq := DeepLXReq{
-			Text:       "test",
-			SourceLang: "en",
-			TargetLang: "zh",
-		}
-
-		dlxResp, _, err := dlxReq.post(keyOrURL)
-
-		if err != nil {
-			slog.Debug("url不可用", "url", keyOrURL, "message", err)
-			return false, nil // 无需返回错误
-		}
-
-		if dlxResp.Code != http.StatusOK {
-			slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
-			return false, nil
-		}
-	} else {
+func checkAlive(isKey bool, keyOrURL string) (bool, error) {
+	if isKey {
 		dReq := DeepLReq{
 			Text:       []string{"test"},
 			TargetLang: "zh",
@@ -226,6 +208,24 @@ func checkAlive(keyOrURL string) (bool, error) {
 			return false, nil
 		} else if dResp.Translations == nil {
 			slog.Debug("key未知原因不可用", "key", keyOrURL, "message", dResp.Message)
+			return false, nil
+		}
+	} else {
+		dlxReq := DeepLXReq{
+			Text:       "test",
+			SourceLang: "en",
+			TargetLang: "zh",
+		}
+
+		dlxResp, _, err := dlxReq.post(keyOrURL)
+
+		if err != nil {
+			slog.Debug("url不可用", "url", keyOrURL, "message", err)
+			return false, nil // 无需返回错误
+		}
+
+		if dlxResp.Code != http.StatusOK {
+			slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
 			return false, nil
 		}
 	}
@@ -258,7 +258,7 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
-			isAlive, err := checkAlive(k)
+			isAlive, err := checkAlive(true, k)
 			if err != nil {
 				slog.Error(err.Error())
 				return
@@ -276,7 +276,7 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			isAlive, err := checkAlive(u)
+			isAlive, err := checkAlive(false, u)
 			if err != nil {
 				slog.Error(err.Error())
 				return
