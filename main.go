@@ -19,13 +19,13 @@ import (
 	"time"
 )
 
-type DeepLReq struct {
+type deepLReq struct {
 	Text        []string `json:"text"`
 	TargetLang  string   `json:"target_lang"`
 	TagHandling string   `json:"tag_handling"`
 }
 
-type DeepLResp struct {
+type deepLResp struct {
 	Translations []struct {
 		DetectedSourceLang string `json:"detected_source_lang"`
 		Text               string `json:"text"`
@@ -33,14 +33,14 @@ type DeepLResp struct {
 	Message string `json:"message"`
 }
 
-type DeepLXReq struct {
+type deepLXReq struct {
 	Text        string `json:"text"`
 	SourceLang  string `json:"source_lang"`
 	TargetLang  string `json:"target_lang"`
 	TagHandling string `json:"tag_handling"`
 }
 
-type DeepLXResp struct {
+type deepLXResp struct {
 	Code         int      `json:"code"`
 	ID           int      `json:"ID"`
 	Data         string   `json:"data"`
@@ -52,43 +52,43 @@ type safeAliveKeysAndURLs struct {
 	mu         sync.RWMutex
 }
 
-func (dlxReq DeepLXReq) post(u string) (DeepLXResp, time.Duration, error) {
-	j, err := json.Marshal(dlxReq)
+func (d deepLXReq) post(u string) (deepLXResp, time.Duration, error) {
+	j, err := json.Marshal(d)
 	if err != nil {
-		return DeepLXResp{}, 0, err
+		return deepLXResp{}, 0, err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(j))
 	if err != nil {
-		return DeepLXResp{}, 0, err
+		return deepLXResp{}, 0, err
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return DeepLXResp{}, 0, err
+		return deepLXResp{}, 0, err
 	}
 	endTime := time.Since(startTime)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return DeepLXResp{}, 0, errors.New(resp.Status)
+		return deepLXResp{}, 0, errors.New(resp.Status)
 	}
 
-	dlxResp := DeepLXResp{}
+	lxResp := deepLXResp{}
 
-	if err = json.NewDecoder(resp.Body).Decode(&dlxResp); err != nil {
-		return DeepLXResp{}, 0, err
+	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
+		return deepLXResp{}, 0, err
 	}
 
-	return dlxResp, endTime, nil
+	return lxResp, endTime, nil
 }
 
-func (dReq DeepLReq) post(key string) (DeepLResp, time.Duration, error) {
-	j, err := json.Marshal(dReq)
+func (d deepLReq) post(key string) (deepLResp, time.Duration, error) {
+	j, err := json.Marshal(d)
 	if err != nil {
-		return DeepLResp{}, 0, err
+		return deepLResp{}, 0, err
 	}
 
 	var req *http.Request
@@ -96,12 +96,12 @@ func (dReq DeepLReq) post(key string) (DeepLResp, time.Duration, error) {
 	if strings.HasSuffix(key, ":fx") {
 		req, err = http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
 		if err != nil {
-			return DeepLResp{}, 0, err
+			return deepLResp{}, 0, err
 		}
 	} else {
 		req, err = http.NewRequest("POST", "https://api.deepl.com/v2/translate", bytes.NewReader(j))
 		if err != nil {
-			return DeepLResp{}, 0, err
+			return deepLResp{}, 0, err
 		}
 	}
 
@@ -112,18 +112,18 @@ func (dReq DeepLReq) post(key string) (DeepLResp, time.Duration, error) {
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return DeepLResp{}, 0, err
+		return deepLResp{}, 0, err
 	}
 	endTime := time.Since(startTime)
 	defer resp.Body.Close()
 
-	dResp := DeepLResp{}
+	lResp := deepLResp{}
 
-	if err = json.NewDecoder(resp.Body).Decode(&dResp); err != nil {
-		return DeepLResp{}, 0, err
+	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
+		return deepLResp{}, 0, err
 	}
 
-	return dResp, endTime, nil
+	return lResp, endTime, nil
 }
 
 func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) {
@@ -190,12 +190,12 @@ func parseKeysAndURLs() ([]string, []string, error) {
 
 func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 	if isKey {
-		dReq := DeepLReq{
+		lReq := deepLReq{
 			Text:       []string{"test"},
 			TargetLang: "zh",
 		}
 
-		dResp, _, err := dReq.post(keyOrURL)
+		lResp, _, err := lReq.post(keyOrURL)
 		if err != nil {
 			if err == io.EOF {
 				slog.Debug("key无效", "key", keyOrURL, "message", err)
@@ -203,28 +203,28 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 			return false, nil
 		}
 
-		if dResp.Message == "Quota Exceeded" && dResp.Translations == nil {
-			slog.Debug("key余额不足", "key", keyOrURL, "message", dResp.Message)
+		if lResp.Message == "Quota Exceeded" && lResp.Translations == nil {
+			slog.Debug("key余额不足", "key", keyOrURL, "message", lResp.Message)
 			return false, nil
-		} else if dResp.Translations == nil {
-			slog.Debug("key未知原因不可用", "key", keyOrURL, "message", dResp.Message)
+		} else if lResp.Translations == nil {
+			slog.Debug("key未知原因不可用", "key", keyOrURL, "message", lResp.Message)
 			return false, nil
 		}
 	} else {
-		dlxReq := DeepLXReq{
+		lxReq := deepLXReq{
 			Text:       "test",
 			SourceLang: "en",
 			TargetLang: "zh",
 		}
 
-		dlxResp, _, err := dlxReq.post(keyOrURL)
+		lxResp, _, err := lxReq.post(keyOrURL)
 
 		if err != nil {
 			slog.Debug("url不可用", "url", keyOrURL, "message", err)
 			return false, nil // 无需返回错误
 		}
 
-		if dlxResp.Code != http.StatusOK {
+		if lxResp.Code != http.StatusOK {
 			slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
 			return false, nil
 		}
@@ -409,14 +409,14 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		saku.mu.RUnlock()
 
 		var (
-			dlxReq   DeepLXReq
-			dlxResp  DeepLXResp
+			lxReq   deepLXReq
+			lxResp  deepLXResp
 			duration time.Duration
 
 			key, u string
 		)
 
-		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&dlxReq); err != nil {
+		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil {
 			slog.Warn("请求体无效")
 			http.Error(w, "请求体无效", http.StatusBadRequest)
 			return
@@ -428,19 +428,19 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			key = (saku.keys)[keyIndex]
 			saku.mu.RUnlock()
 
-			dReq := DeepLReq{}
-			dReq.Text = make([]string, 1)
-			dReq.TargetLang = dlxReq.TargetLang
-			dReq.Text[0] = dlxReq.Text
+			lReq := deepLReq{}
+			lReq.Text = make([]string, 1)
+			lReq.TargetLang = lxReq.TargetLang
+			lReq.Text[0] = lxReq.Text
 
-			var dResp DeepLResp
+			var lResp deepLResp
 
-			dResp, duration, err = dReq.post(key)
+			lResp, duration, err = lReq.post(key)
 			if err != nil {
-				if dResp.Message == "" {
-					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", dlxReq.Text)
+				if lResp.Message == "" {
+					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", lxReq.Text)
 				} else {
-					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", dResp.Message, "text", dlxReq.Text)
+					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", lResp.Message, "text", lxReq.Text)
 				}
 
 				saku.removeKeyOrURL(true, key)
@@ -448,22 +448,22 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 				goto reTranslate
 			}
 
-			dlxResp.Alternatives = make([]string, 1)
-			dlxResp.Code = http.StatusOK
-			dlxResp.Data = dResp.Translations[0].Text
-			dlxResp.Alternatives[0] = dResp.Translations[0].Text
+			lxResp.Alternatives = make([]string, 1)
+			lxResp.Code = http.StatusOK
+			lxResp.Data = lResp.Translations[0].Text
+			lxResp.Alternatives[0] = lResp.Translations[0].Text
 		} else {
 			saku.mu.RLock()
 			urlIndex := rand.IntN(len(saku.urls))
 			u = saku.urls[urlIndex]
 			saku.mu.RUnlock()
 
-			dlxResp, duration, err = dlxReq.post(u)
-			if err != nil || dlxResp.Code != http.StatusOK {
+			lxResp, duration, err = lxReq.post(u)
+			if err != nil || lxResp.Code != http.StatusOK {
 				if err != nil {
-					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", dlxReq.Text)
+					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", lxReq.Text)
 				} else {
-					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", dlxReq.Text)
+					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", lxReq.Text)
 				}
 
 				saku.removeKeyOrURL(false, u)
@@ -475,22 +475,22 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		var usedGoogleTranslate bool
 
 		if enableCheckContainsChinese {
-			if !containsChinese(dlxResp.Data) {
-				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "text", dlxResp.Data)
+			if !containsChinese(lxResp.Data) {
+				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "text", lxResp.Data)
 
 				var googleTranslateText string
 
-				googleTranslateText, duration, err = googleTranslate(dlxReq.Text, dlxReq.SourceLang, dlxReq.TargetLang)
+				googleTranslateText, duration, err = googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
 				if err != nil {
 					slog.Warn("谷歌翻译失败", "message", err.Error())
 				} else {
-					dlxResp.Data = googleTranslateText
+					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
 				}
 			}
 		}
 
-		j, err := json.Marshal(dlxResp)
+		j, err := json.Marshal(lxResp)
 		if err != nil {
 			slog.Error(err.Error())
 			http.Error(w, "出错了", http.StatusInternalServerError)
@@ -498,9 +498,9 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		}
 
 		if enableCheckContainsChinese {
-			slog.Debug(dlxResp.Data, "key", key, "url", u, "usedGoogleTranslate", usedGoogleTranslate, "latency", duration)
+			slog.Debug(lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", usedGoogleTranslate, "latency", duration)
 		} else {
-			slog.Debug(dlxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false, "latency", duration)
+			slog.Debug(lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false, "latency", duration)
 		}
 
 		fmt.Fprintln(w, string(j))
