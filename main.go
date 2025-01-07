@@ -47,6 +47,11 @@ type DeepLXResp struct {
 	Alternatives []string `json:"alternatives"`
 }
 
+type safeAliveKeysAndURLs struct {
+	keys, urls []string
+	mu         sync.RWMutex
+}
+
 func (dlxReq DeepLXReq) post(u string) (DeepLXResp, time.Duration, error) {
 	j, err := json.Marshal(dlxReq)
 	if err != nil {
@@ -209,9 +214,9 @@ func checkAlive(keyOrURL string) (bool, error) {
 var isChecking bool
 var errIsChecking = errors.New("正在检测中")
 
-func runCheck() (int, int, []string, []string, error) {
+func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 	if isChecking {
-		return 0, 0, nil, nil, errIsChecking
+		return 0, 0, errIsChecking
 	}
 
 	isChecking = true
@@ -220,12 +225,9 @@ func runCheck() (int, int, []string, []string, error) {
 	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
 		slog.Error(err.Error())
-		return 0, 0, nil, nil, err
+		return 0, 0, err
 	}
 
-	var mu sync.Mutex
-	var aliveKeys []string
-	var aliveURLs []string
 	var wg sync.WaitGroup
 
 	for _, key := range keys {
@@ -239,9 +241,9 @@ func runCheck() (int, int, []string, []string, error) {
 			}
 
 			if isAlive {
-				mu.Lock()
-				aliveKeys = append(aliveKeys, k)
-				mu.Unlock()
+				saku.mu.Lock()
+				saku.keys = append(saku.keys, k)
+				saku.mu.Unlock()
 			}
 		}(key)
 	}
@@ -257,18 +259,18 @@ func runCheck() (int, int, []string, []string, error) {
 			}
 
 			if isAlive {
-				mu.Lock()
-				aliveURLs = append(aliveURLs, u)
-				mu.Unlock()
+				saku.mu.Lock()
+				saku.urls = append(saku.urls, u)
+				saku.mu.Unlock()
 			}
 		}(url)
 	}
 
 	wg.Wait()
 
-	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(aliveKeys), "总共url数量", len(urls), "可用url数量", len(aliveURLs))
+	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(saku.keys), "总共url数量", len(urls), "可用url数量", len(saku.urls))
 
-	return len(keys), len(urls), aliveKeys, aliveURLs, nil
+	return len(keys), len(urls), nil
 }
 
 func containsChinese(text string) bool {
@@ -324,7 +326,7 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, time.Du
 	}
 }
 
-func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bool) http.HandlerFunc {
+func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -334,17 +336,15 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 
 	reTranslate:
 
-		var mu sync.RWMutex
-
-		mu.RLock()
-		if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
-			mu.RUnlock()
+		saku.mu.RLock()
+		if len(saku.keys) == 0 && len(saku.urls) == 0 {
+			saku.mu.RUnlock()
 
 			slog.Debug("无可用key和url, 开始重新检测")
 
-			mu.Lock()
-			_, _, *aliveKeys, *aliveURLs, err = runCheck()
-			mu.Unlock()
+			saku.mu.Lock()
+			_, _, err = runCheck(saku)
+			saku.mu.Unlock()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Debug("已在检测中")
@@ -357,29 +357,30 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 				return
 			}
 
-			mu.RLock()
-			if len(*aliveKeys) == 0 && len(*aliveURLs) == 0 {
-				mu.RUnlock()
+			saku.mu.RLock()
+			if len(saku.keys) == 0 && len(saku.urls) == 0 {
+				saku.mu.RUnlock()
 				slog.Error("无可用key和url")
 				http.Error(w, "无可用key和url", http.StatusInternalServerError)
 				return
+			} else {
+				saku.mu.RUnlock()
 			}
-			mu.RUnlock()
 		} else {
-			mu.RUnlock()
+			saku.mu.RUnlock()
 		}
 
 		var use int // 0 = key, 1 = url
 
-		mu.RLock()
-		if len(*aliveKeys) > 0 && len(*aliveURLs) > 0 {
+		saku.mu.RLock()
+		if len(saku.keys) > 0 && len(saku.urls) > 0 {
 			use = rand.IntN(2)
-		} else if len(*aliveKeys) == 0 {
+		} else if len(saku.keys) == 0 {
 			use = 1
-		} else if len(*aliveURLs) == 0 {
+		} else if len(saku.urls) == 0 {
 			use = 0
 		}
-		mu.RUnlock()
+		saku.mu.RUnlock()
 
 		var (
 			dlxReq   DeepLXReq
@@ -396,10 +397,10 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 		}
 
 		if use == 0 {
-			mu.RLock()
-			keyIndex := rand.IntN(len(*aliveKeys))
-			key = (*aliveKeys)[keyIndex]
-			mu.RUnlock()
+			saku.mu.RLock()
+			keyIndex := rand.IntN(len(saku.keys))
+			key = (saku.keys)[keyIndex]
+			saku.mu.RUnlock()
 
 			dReq := DeepLReq{}
 			dReq.Text = make([]string, 1)
@@ -416,10 +417,10 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", dResp.Message, "text", dlxReq.Text)
 				}
 
-				mu.Lock()
-				(*aliveKeys)[keyIndex] = (*aliveKeys)[len(*aliveKeys)-1]
-				*aliveKeys = (*aliveKeys)[:len(*aliveKeys)-1]
-				mu.Unlock()
+				saku.mu.Lock()
+				saku.keys[keyIndex] = saku.keys[len(saku.keys)-1]
+				saku.keys = saku.keys[:len(saku.keys)-1]
+				saku.mu.Unlock()
 
 				goto reTranslate
 			}
@@ -429,10 +430,10 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 			dlxResp.Data = dResp.Translations[0].Text
 			dlxResp.Alternatives[0] = dResp.Translations[0].Text
 		} else {
-			mu.RLock()
-			urlIndex := rand.IntN(len(*aliveURLs))
-			u = (*aliveURLs)[urlIndex]
-			mu.RUnlock()
+			saku.mu.RLock()
+			urlIndex := rand.IntN(len(saku.urls))
+			u = saku.urls[urlIndex]
+			saku.mu.RUnlock()
 
 			dlxResp, duration, err = dlxReq.post(u)
 			if err != nil || dlxResp.Code != http.StatusOK {
@@ -442,10 +443,10 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", dlxReq.Text)
 				}
 
-				mu.Lock()
-				(*aliveURLs)[urlIndex] = (*aliveURLs)[len(*aliveURLs)-1]
-				*aliveURLs = (*aliveURLs)[:len(*aliveURLs)-1]
-				mu.Unlock()
+				saku.mu.Lock()
+				saku.urls[urlIndex] = saku.urls[len(saku.urls)-1]
+				saku.urls = saku.urls[:len(saku.urls)-1]
+				saku.mu.Unlock()
 
 				goto reTranslate
 			}
@@ -486,16 +487,15 @@ func handleForward(aliveKeys, aliveURLs *[]string, enableCheckContainsChinese bo
 	}
 }
 
-func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
+func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + "请求了该端点")
 
-		var mu sync.Mutex
 		var totalKeys, totalURLs int
 		var err error
 
-		mu.Lock()
-		totalKeys, totalURLs, *aliveKeys, *aliveURLs, err = runCheck()
+		saku.mu.Lock()
+		totalKeys, totalURLs, err = runCheck(saku)
 		if err != nil {
 			if errors.Is(err, errIsChecking) {
 				slog.Warn("已在检测中")
@@ -507,10 +507,10 @@ func handleCheckAlive(aliveKeys, aliveURLs *[]string) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		mu.Unlock()
+		saku.mu.Unlock()
 
 		_, err = w.Write([]byte(fmt.Sprintf("可用数量检测, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
-			totalKeys, len(*aliveKeys), totalURLs, len(*aliveURLs))))
+			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
 		if err != nil {
 			slog.Warn(err.Error())
 			return
@@ -522,7 +522,9 @@ func main() {
 	enableJSONOutput, enableDebug, enableCheckContainsChinese := parseArgs()
 	slog.SetDefault(newLogger(enableJSONOutput, enableDebug))
 
-	_, _, aliveKeys, aliveURLs, err := runCheck()
+	saku := &safeAliveKeysAndURLs{}
+
+	_, _, err := runCheck(saku)
 	if err != nil {
 		slog.Error(err.Error())
 		return
@@ -533,19 +535,19 @@ func main() {
 
 	go func() {
 		for range ticker.C {
-			_, _, aliveKeys, aliveURLs, err = runCheck()
+			_, _, err = runCheck(saku)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Warn("已在检测中")
-					return
+					continue
 				}
 				slog.Error(err.Error())
 			}
 		}
 	}()
 
-	http.HandleFunc("/", handleForward(&aliveKeys, &aliveURLs, enableCheckContainsChinese))
-	http.HandleFunc("/check-alive", handleCheckAlive(&aliveKeys, &aliveURLs))
+	http.HandleFunc("/", handleForward(saku, enableCheckContainsChinese))
+	http.HandleFunc("/check-alive", handleCheckAlive(saku))
 
 	slog.Info("服务运行在http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
