@@ -222,6 +222,8 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 	isChecking = true
 	defer func() { isChecking = false }()
 
+	var aliveKeys, aliveURLs []string
+
 	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
 		slog.Error(err.Error())
@@ -242,7 +244,7 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 
 			if isAlive {
 				saku.mu.Lock()
-				saku.keys = append(saku.keys, k)
+				aliveKeys = append(aliveKeys, k)
 				saku.mu.Unlock()
 			}
 		}(key)
@@ -260,13 +262,17 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 
 			if isAlive {
 				saku.mu.Lock()
-				saku.urls = append(saku.urls, u)
+				aliveURLs = append(aliveURLs, u)
 				saku.mu.Unlock()
 			}
 		}(url)
 	}
 
 	wg.Wait()
+
+	saku.mu.Lock()
+	saku.keys, saku.urls = aliveKeys, aliveURLs
+	saku.mu.Unlock()
 
 	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(saku.keys), "总共url数量", len(urls), "可用url数量", len(saku.urls))
 
@@ -342,9 +348,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 			slog.Debug("无可用key和url, 开始重新检测")
 
-			saku.mu.Lock()
 			_, _, err = runCheck(saku)
-			saku.mu.Unlock()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Debug("已在检测中")
@@ -491,11 +495,7 @@ func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + "请求了该端点")
 
-		var totalKeys, totalURLs int
-		var err error
-
-		saku.mu.Lock()
-		totalKeys, totalURLs, err = runCheck(saku)
+		totalKeys, totalURLs, err := runCheck(saku)
 		if err != nil {
 			if errors.Is(err, errIsChecking) {
 				slog.Warn("已在检测中")
@@ -507,7 +507,6 @@ func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		saku.mu.Unlock()
 
 		_, err = w.Write([]byte(fmt.Sprintf("可用数量检测, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
 			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
