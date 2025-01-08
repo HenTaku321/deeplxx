@@ -42,7 +42,7 @@ type deepLXReq struct {
 
 type deepLXResp struct {
 	Code         int      `json:"code"`
-	ID           int      `json:"ID"`
+	ID           int      `json:"id"`
 	Data         string   `json:"data"`
 	Alternatives []string `json:"alternatives"`
 }
@@ -359,6 +359,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		reqBody, err := io.ReadAll(r.Body)
 		if err != nil {
 			slog.Error(err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -409,8 +410,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		saku.mu.RUnlock()
 
 		var (
-			lxReq   deepLXReq
-			lxResp  deepLXResp
+			lxReq    deepLXReq
+			lxResp   deepLXResp
 			duration time.Duration
 
 			key, u string
@@ -503,7 +504,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			slog.Debug(lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false, "latency", duration)
 		}
 
-		fmt.Fprintln(w, string(j))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, string(j))
 	}
 }
 
