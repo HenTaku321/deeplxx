@@ -441,6 +441,11 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 				goto reTranslate
 			}
 
+			if len(lResp.Translations) == 0{
+				slog.Warn("DeepL翻译失败, 并重新翻译","message",lResp.Message,"text",lxReq.Text)
+				goto reTranslate
+			}
+
 			lxResp.Alternatives = make([]string, 1)
 			lxResp.Code = http.StatusOK
 			lxResp.Data = lResp.Translations[0].Text
