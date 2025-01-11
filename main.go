@@ -52,43 +52,41 @@ type safeAliveKeysAndURLs struct {
 	mu         sync.RWMutex
 }
 
-func (d deepLXReq) post(u string) (deepLXResp, time.Duration, error) {
+func (d deepLXReq) post(u string) (deepLXResp, error) {
 	j, err := json.Marshal(d)
 	if err != nil {
-		return deepLXResp{}, 0, err
+		return deepLXResp{}, err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(j))
 	if err != nil {
-		return deepLXResp{}, 0, err
+		return deepLXResp{}, err
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	startTime := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return deepLXResp{}, 0, err
+		return deepLXResp{}, err
 	}
-	endTime := time.Since(startTime)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return deepLXResp{}, 0, errors.New(resp.Status)
+		return deepLXResp{}, errors.New(resp.Status)
 	}
 
 	lxResp := deepLXResp{}
 
 	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
-		return deepLXResp{}, 0, err
+		return deepLXResp{}, err
 	}
 
-	return lxResp, endTime, nil
+	return lxResp, nil
 }
 
-func (d deepLReq) post(key string) (deepLResp, time.Duration, error) {
+func (d deepLReq) post(key string) (deepLResp, error) {
 	j, err := json.Marshal(d)
 	if err != nil {
-		return deepLResp{}, 0, err
+		return deepLResp{}, err
 	}
 
 	var req *http.Request
@@ -96,12 +94,12 @@ func (d deepLReq) post(key string) (deepLResp, time.Duration, error) {
 	if strings.HasSuffix(key, ":fx") {
 		req, err = http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
 		if err != nil {
-			return deepLResp{}, 0, err
+			return deepLResp{}, err
 		}
 	} else {
 		req, err = http.NewRequest("POST", "https://api.deepl.com/v2/translate", bytes.NewReader(j))
 		if err != nil {
-			return deepLResp{}, 0, err
+			return deepLResp{}, err
 		}
 	}
 
@@ -109,21 +107,19 @@ func (d deepLReq) post(key string) (deepLResp, time.Duration, error) {
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
-	startTime := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return deepLResp{}, 0, err
+		return deepLResp{}, err
 	}
-	endTime := time.Since(startTime)
 	defer resp.Body.Close()
 
 	lResp := deepLResp{}
 
 	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
-		return deepLResp{}, 0, err
+		return deepLResp{}, err
 	}
 
-	return lResp, endTime, nil
+	return lResp, nil
 }
 
 func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) {
@@ -195,7 +191,7 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 			TargetLang: "zh",
 		}
 
-		lResp, _, err := lReq.post(keyOrURL)
+		lResp, err := lReq.post(keyOrURL)
 		if err != nil {
 			if err == io.EOF {
 				slog.Debug("key无效", "key", keyOrURL, "message", err)
@@ -217,8 +213,7 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 			TargetLang: "zh",
 		}
 
-		lxResp, _, err := lxReq.post(keyOrURL)
-
+		lxResp, err := lxReq.post(keyOrURL)
 		if err != nil {
 			slog.Debug("url不可用", "url", keyOrURL, "message", err)
 			return false, nil // 无需返回错误
@@ -308,34 +303,32 @@ func containsChinese(text string) bool {
 
 var errGoogleTranslateFailed = errors.New("谷歌翻译失败")
 
-func googleTranslate(sourceText, sourceLang, targetLang string) (string, time.Duration, error) {
+func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) {
 	var text []string
 	var result []interface{}
 
 	u := "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
 		sourceLang + "&tl=" + targetLang + "&dt=t&q=" + url.QueryEscape(sourceText)
 
-	startTime := time.Now()
 	resp, err := http.Get(u)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
-	endTime := time.Since(startTime)
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 
 	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
 	if bReq {
-		return "", 0, errGoogleTranslateFailed
+		return "", errGoogleTranslateFailed
 	}
 
 	err = json.Unmarshal(body, &result)
 	if err != nil {
-		return "", 0, errGoogleTranslateFailed
+		return "", errGoogleTranslateFailed
 	}
 
 	if len(result) > 0 {
@@ -348,14 +341,16 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, time.Du
 		}
 		cText := strings.Join(text, "")
 
-		return cText, endTime, nil
+		return cText, nil
 	} else {
-		return "", 0, errGoogleTranslateFailed
+		return "", errGoogleTranslateFailed
 	}
 }
 
 func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		startTime := time.Now()
+
 		reqBody, err := io.ReadAll(r.Body)
 		if err != nil {
 			slog.Error(err.Error())
@@ -410,9 +405,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		saku.mu.RUnlock()
 
 		var (
-			lxReq    deepLXReq
-			lxResp   deepLXResp
-			duration time.Duration
+			lxReq  deepLXReq
+			lxResp deepLXResp
 
 			key, u string
 		)
@@ -434,9 +428,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			lReq.TargetLang = lxReq.TargetLang
 			lReq.Text[0] = lxReq.Text
 
-			var lResp deepLResp
-
-			lResp, duration, err = lReq.post(key)
+			lResp, err := lReq.post(key)
 			if err != nil {
 				if lResp.Message == "" {
 					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", lxReq.Text)
@@ -459,7 +451,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			u = saku.urls[urlIndex]
 			saku.mu.RUnlock()
 
-			lxResp, duration, err = lxReq.post(u)
+			lxResp, err = lxReq.post(u)
 			if err != nil || lxResp.Code != http.StatusOK {
 				if err != nil {
 					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", lxReq.Text)
@@ -479,9 +471,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			if !containsChinese(lxResp.Data) {
 				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "text", lxResp.Data)
 
-				var googleTranslateText string
-
-				googleTranslateText, duration, err = googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
+				googleTranslateText, err := googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
 				if err != nil {
 					slog.Warn("谷歌翻译失败", "message", err.Error())
 				} else {
@@ -499,9 +489,9 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		}
 
 		if enableCheckContainsChinese {
-			slog.Debug(lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", usedGoogleTranslate, "latency", duration)
+			slog.Debug("翻译信息", "text", lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", usedGoogleTranslate, "latency", time.Since(startTime))
 		} else {
-			slog.Debug(lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false, "latency", duration)
+			slog.Debug("翻译信息", "text", lxResp.Data, "key", key, "url", u, "usedGoogleTranslate", false, "latency", time.Since(startTime))
 		}
 
 		w.Header().Set("Content-Type", "application/json")
