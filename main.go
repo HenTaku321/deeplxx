@@ -122,7 +122,7 @@ func (d deepLReq) post(key string) (deepLResp, error) {
 	return lResp, nil
 }
 
-func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) {
+func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
 	var slice *[]string
 
 	saku.mu.RLock()
@@ -139,9 +139,11 @@ func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) {
 			(*slice)[i] = (*slice)[len(*slice)-1]
 			*slice = (*slice)[:len(*slice)-1]
 			saku.mu.Unlock()
-			return
+			return true
 		}
 	}
+
+	return false
 }
 
 func parseKeysAndURLs() ([]string, []string, error) {
@@ -430,19 +432,18 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 			lResp, err := lReq.post(key)
 			if err != nil {
-				if lResp.Message == "" {
-					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", lxReq.Text)
-				} else {
-					slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", lResp.Message, "text", lxReq.Text)
+				if saku.removeKeyOrURL(true, key) {
+					if lResp.Message == "" {
+						slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", lxReq.Text)
+					} else {
+						slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", lResp.Message, "text", lxReq.Text)
+					}
 				}
-
-				saku.removeKeyOrURL(true, key)
-
 				goto reTranslate
 			}
 
-			if len(lResp.Translations) == 0{
-				slog.Warn("DeepL翻译失败, 并重新翻译","message",lResp.Message,"text",lxReq.Text)
+			if len(lResp.Translations) == 0 {
+				slog.Warn("DeepL翻译失败, 并重新翻译", "message", lResp.Message, "text", lxReq.Text)
 				goto reTranslate
 			}
 
@@ -458,14 +459,13 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 			lxResp, err = lxReq.post(u)
 			if err != nil || lxResp.Code != http.StatusOK {
-				if err != nil {
-					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", lxReq.Text)
-				} else {
-					slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", lxReq.Text)
+				if saku.removeKeyOrURL(false, u) {
+					if err != nil {
+						slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", lxReq.Text)
+					} else {
+						slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", lxReq.Text)
+					}
 				}
-
-				saku.removeKeyOrURL(false, u)
-
 				goto reTranslate
 			}
 		}
