@@ -201,11 +201,12 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 			return false, nil
 		}
 
-		if lResp.Message == "Quota Exceeded" && lResp.Translations == nil {
-			slog.Debug("key余额不足", "key", keyOrURL, "message", lResp.Message)
-			return false, nil
-		} else if lResp.Translations == nil {
-			slog.Debug("key未知原因不可用", "key", keyOrURL, "message", lResp.Message)
+		if lResp.Translations == nil {
+			if lResp.Message == "Quota Exceeded" {
+				slog.Debug("key余额不足", "key", keyOrURL, "message", lResp.Message)
+			} else {
+				slog.Debug("key未知原因不可用", "key", keyOrURL, "message", lResp.Message)
+			}
 			return false, nil
 		}
 	} else {
