@@ -83,6 +83,8 @@ func (d deepLXReq) post(u string) (deepLXResp, error) {
 	return lxResp, nil
 }
 
+var errDeepLTooManyRequests = errors.New("too many requests")
+
 func (d deepLReq) post(key string) (deepLResp, error) {
 	j, err := json.Marshal(d)
 	if err != nil {
@@ -115,7 +117,16 @@ func (d deepLReq) post(key string) (deepLResp, error) {
 
 	lResp := deepLResp{}
 
-	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return deepLResp{}, err
+	}
+
+	if bytes.Contains(body, []byte("<title>429 Too Many Requests")) {
+		return deepLResp{}, errDeepLTooManyRequests
+	}
+
+	if err = json.NewDecoder(bytes.NewReader(body)).Decode(&lResp); err != nil {
 		return deepLResp{}, err
 	}
 
@@ -195,8 +206,11 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 
 		lResp, err := lReq.post(keyOrURL)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				slog.Debug("key无效", "key", keyOrURL, "message", err)
+			}
+			if errors.Is(err, errDeepLTooManyRequests) {
+				slog.Debug("key请求过多", "key", keyOrURL, "message", err)
 			}
 			return false, nil
 		}
