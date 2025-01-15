@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -187,7 +188,7 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	}
 
 	if isEmpty {
-		return nil, nil, errors.New("apis.txt为空")
+		return nil, nil, errors.New("apis.txt is empty")
 	}
 
 	if scanner.Err() != nil {
@@ -207,19 +208,19 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 		lResp, err := lReq.post(keyOrURL)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				slog.Debug("key无效", "key", keyOrURL, "message", err)
+				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err)
 			}
 			if errors.Is(err, errDeepLTooManyRequests) {
-				slog.Debug("key请求过多", "key", keyOrURL, "message", err)
+				slog.Debug("deepl key has too many requests", "key", keyOrURL, "error message", err)
 			}
 			return false, nil
 		}
 
 		if lResp.Translations == nil {
 			if lResp.Message == "Quota Exceeded" {
-				slog.Debug("key余额不足", "key", keyOrURL, "message", lResp.Message)
+				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", lResp.Message)
 			} else {
-				slog.Debug("key未知原因不可用", "key", keyOrURL, "message", lResp.Message)
+				slog.Debug("deepl key is unavailable for unknown reason", "key", keyOrURL, "error message", lResp.Message)
 			}
 			return false, nil
 		}
@@ -232,12 +233,12 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 
 		lxResp, err := lxReq.post(keyOrURL)
 		if err != nil {
-			slog.Debug("url不可用", "url", keyOrURL, "message", err)
+			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", err)
 			return false, nil // 无需返回错误
 		}
 
 		if lxResp.Code != http.StatusOK {
-			slog.Debug("url不可用", "url", keyOrURL, "message", "http状态码不等于200")
+			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", "HTTP "+strconv.Itoa(lxResp.Code))
 			return false, nil
 		}
 	}
@@ -246,7 +247,7 @@ func checkAlive(isKey bool, keyOrURL string) (bool, error) {
 }
 
 var isChecking bool
-var errIsChecking = errors.New("正在检测中")
+var errIsChecking = errors.New("currently checking")
 
 func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 	if isChecking {
@@ -308,7 +309,7 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 	saku.keys, saku.urls = aliveKeys, aliveURLs
 	saku.mu.Unlock()
 
-	slog.Info("可用数量检测", "总共key数量", len(keys), "可用key数量", len(saku.keys), "总共url数量", len(urls), "可用url数量", len(saku.urls))
+	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
 
 	return len(keys), len(urls), nil
 }
@@ -318,7 +319,7 @@ func containsChinese(text string) bool {
 	return re.MatchString(text)
 }
 
-var errGoogleTranslateFailed = errors.New("谷歌翻译失败")
+var errGoogleTranslateFailed = errors.New("google translate failed")
 
 func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) {
 	var text []string
@@ -340,12 +341,12 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) 
 
 	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
 	if bReq {
-		return "", errGoogleTranslateFailed
+		return "", errors.Join(errGoogleTranslateFailed, errors.New("HTTP 400 (Bad Request)"))
 	}
 
 	err = json.Unmarshal(body, &result)
 	if err != nil {
-		return "", errGoogleTranslateFailed
+		return "", errors.Join(errGoogleTranslateFailed, err)
 	}
 
 	if len(result) > 0 {
@@ -375,7 +376,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			return
 		}
 
-		var forceUseKey bool
+		var forceUseDeepL bool
 
 	reTranslate:
 
@@ -383,13 +384,13 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		if len(saku.keys) == 0 && len(saku.urls) == 0 {
 			saku.mu.RUnlock()
 
-			slog.Debug("无可用key和url, 开始重新检测")
+			slog.Debug("no available keys and urls, start rechecking")
 
 			_, _, err = runCheck(saku)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
-					slog.Debug("已在检测中")
-					http.Error(w, "无可用key和url", http.StatusInternalServerError)
+					slog.Debug("currently rechecking")
+					http.Error(w, "no available keys or urls, currently rechecking", http.StatusInternalServerError)
 					return
 				}
 
@@ -401,8 +402,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			saku.mu.RLock()
 			if len(saku.keys) == 0 && len(saku.urls) == 0 {
 				saku.mu.RUnlock()
-				slog.Error("无可用key和url")
-				http.Error(w, "无可用key和url", http.StatusInternalServerError)
+				slog.Error("no available keys and urls")
+				http.Error(w, "no available keys and urls", http.StatusInternalServerError)
 				return
 			} else {
 				saku.mu.RUnlock()
@@ -413,7 +414,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 		var use int // 0 = key, 1 = url
 
-		if !forceUseKey {
+		if !forceUseDeepL {
 			saku.mu.RLock()
 			if len(saku.keys) > 0 && len(saku.urls) > 0 {
 				use = rand.IntN(2)
@@ -433,8 +434,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		)
 
 		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil {
-			slog.Warn("请求体无效")
-			http.Error(w, "请求体无效", http.StatusBadRequest)
+			slog.Warn("invalid request body")
+			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
 
@@ -453,16 +454,16 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			if err != nil {
 				if saku.removeKeyOrURL(true, key) {
 					if lResp.Message == "" {
-						slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", err.Error(), "text", lxReq.Text)
+						slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err.Error(), "text", lxReq.Text, "latency", time.Since(startTime))
 					} else {
-						slog.Warn("删除一个不可用的key, 并重新翻译", "key", key, "message", lResp.Message, "text", lxReq.Text)
+						slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", lResp.Message, "text", lxReq.Text, "latency", time.Since(startTime))
 					}
 				}
 				goto reTranslate
 			}
 
 			if len(lResp.Translations) == 0 {
-				slog.Warn("DeepL翻译失败, 并重新翻译", "message", lResp.Message, "text", lxReq.Text)
+				slog.Warn("deepl translate failed, retranslate", "error message", lResp.Message, "text", lxReq.Text, "latency", time.Since(startTime))
 				goto reTranslate
 			}
 
@@ -480,9 +481,9 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			if err != nil || lxResp.Code != http.StatusOK {
 				if saku.removeKeyOrURL(false, u) {
 					if err != nil {
-						slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", err.Error(), "text", lxReq.Text)
+						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", err.Error(), "text", lxReq.Text, "latency", time.Since(startTime))
 					} else {
-						slog.Warn("删除一个不可用的url, 并重新翻译", "url", u, "message", "http状态码不等于200", "text", lxReq.Text)
+						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", "HTTP "+strconv.Itoa(lxResp.Code), "text", lxReq.Text, "latency", time.Since(startTime))
 					}
 				}
 				goto reTranslate
@@ -496,17 +497,17 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 				saku.mu.RLock()
 				if use == 1 && len(saku.keys) > 0 {
 					saku.mu.RUnlock()
-					slog.Debug("检测到漏译, 尝试强制使用key翻译", "text", lxResp.Data, "url", u)
-					forceUseKey = true
+					slog.Debug("detected missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime))
+					forceUseDeepL = true
 					goto reTranslate
 				}
 				saku.mu.RUnlock()
 
-				slog.Debug("检测到key也漏译或没有可用的key, 尝试使用谷歌翻译", "text", lxResp.Data, "key", key)
+				slog.Debug("detected deepl is also missing translation, or has no available key, retranslate with google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime))
 
 				googleTranslateText, err := googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
 				if err != nil {
-					slog.Warn("谷歌翻译失败", "message", err.Error())
+					slog.Warn("google translate failed", "error message", err.Error(), "latency", time.Since(startTime))
 				} else {
 					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
@@ -517,11 +518,11 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 		j, err := json.Marshal(lxResp)
 		if err != nil {
 			slog.Error(err.Error())
-			http.Error(w, "出错了", http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		slog.Debug("翻译信息", "text", lxResp.Data, "key", key, "url", u, "强制使用了key翻译", forceUseKey, "使用了谷歌翻译", usedGoogleTranslate, "latency", time.Since(startTime))
+		slog.Debug("translation info", "text", lxResp.Data, "key", key, "url", u, "force used deepl", forceUseDeepL, "used google translate", usedGoogleTranslate, "latency", time.Since(startTime))
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, string(j))
@@ -530,13 +531,13 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Debug(r.RemoteAddr + "请求测活")
+		slog.Debug(r.RemoteAddr + "request of rechecking")
 
 		totalKeys, totalURLs, err := runCheck(saku)
 		if err != nil {
 			if errors.Is(err, errIsChecking) {
-				slog.Warn("已在检测中")
-				http.Error(w, "已在检测中, 请稍后重试", http.StatusServiceUnavailable)
+				slog.Warn("currently rechecking")
+				http.Error(w, "currently rechecking, try again later", http.StatusServiceUnavailable)
 				return
 			}
 
@@ -545,7 +546,7 @@ func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 			return
 		}
 
-		_, err = w.Write([]byte(fmt.Sprintf("可用数量检测, 总共key数量:%d, 可用key数量:%d, 总共url数量:%d, 可用url数量:%d\n",
+		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
 			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
 		if err != nil {
 			slog.Warn(err.Error())
@@ -574,7 +575,7 @@ func main() {
 			_, _, err = runCheck(saku)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
-					slog.Warn("已在检测中")
+					slog.Warn("currently rechecking")
 					continue
 				}
 				slog.Error(err.Error())
@@ -585,7 +586,7 @@ func main() {
 	http.HandleFunc("/", handleForward(saku, enableCheckContainsChinese))
 	http.HandleFunc("/check-alive", handleCheckAlive(saku))
 
-	slog.Info("服务运行在http://localhost:9000")
+	slog.Info("server running on http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
 	if err != nil {
 		panic(err)
@@ -618,9 +619,9 @@ func newLogger(enableJSON, enableDebug bool) *slog.Logger {
 }
 
 func parseArgs() (enableJSONOutput, enableDebug, enableCheckContainsChinese bool) {
-	flag.BoolVar(&enableJSONOutput, "j", false, "输出JSON格式")
-	flag.BoolVar(&enableDebug, "d", false, "输出调试信息")
-	flag.BoolVar(&enableCheckContainsChinese, "c", false, "检测是否漏译, 目标语言非中文请勿启用")
+	flag.BoolVar(&enableJSONOutput, "j", false, "output JSON format")
+	flag.BoolVar(&enableDebug, "d", false, "output debugging message")
+	flag.BoolVar(&enableCheckContainsChinese, "c", false, "detect for missing translations, do not enable if the target language is not chinese")
 
 	flag.Parse()
 
