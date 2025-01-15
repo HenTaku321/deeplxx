@@ -375,6 +375,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 			return
 		}
 
+		var forceUseKey bool
+
 	reTranslate:
 
 		saku.mu.RLock()
@@ -411,15 +413,17 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 		var use int // 0 = key, 1 = url
 
-		saku.mu.RLock()
-		if len(saku.keys) > 0 && len(saku.urls) > 0 {
-			use = rand.IntN(2)
-		} else if len(saku.keys) == 0 {
-			use = 1
-		} else if len(saku.urls) == 0 {
-			use = 0
+		if !forceUseKey {
+			saku.mu.RLock()
+			if len(saku.keys) > 0 && len(saku.urls) > 0 {
+				use = rand.IntN(2)
+			} else if len(saku.keys) == 0 {
+				use = 1
+			} // else if len(saku.urls) == 0 {
+			//	use = 0
+			//}
+			saku.mu.RUnlock()
 		}
-		saku.mu.RUnlock()
 
 		var (
 			lxReq  deepLXReq
@@ -489,7 +493,16 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 		if enableCheckContainsChinese {
 			if !containsChinese(lxResp.Data) {
-				slog.Debug("检测到漏译, 尝试使用谷歌翻译", "text", lxResp.Data)
+				saku.mu.RLock()
+				if use == 1 && len(saku.keys) > 0 {
+					saku.mu.RUnlock()
+					slog.Debug("检测到漏译, 尝试强制使用Key翻译", "text", lxResp.Data, "url", u)
+					forceUseKey = true
+					goto reTranslate
+				}
+				saku.mu.RUnlock()
+
+				slog.Debug("检测到Key也漏译或没有可用的Key, 尝试使用谷歌翻译", "text", lxResp.Data, "key", key)
 
 				googleTranslateText, err := googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
 				if err != nil {
