@@ -314,11 +314,6 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 	return len(keys), len(urls), nil
 }
 
-func containsChinese(text string) bool {
-	re := regexp.MustCompile(`\p{Han}`)
-	return re.MatchString(text)
-}
-
 var errGoogleTranslateFailed = errors.New("google translate failed")
 
 func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) {
@@ -365,7 +360,7 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) 
 	}
 }
 
-func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) http.HandlerFunc {
+func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
@@ -492,8 +487,8 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 		var usedGoogleTranslate bool
 
-		if enableCheckContainsChinese {
-			if !containsChinese(lxResp.Data) {
+		if retargetLanguageName != nil {
+			if !retargetLanguageName.MatchString(lxResp.Data) {
 				saku.mu.RLock()
 				if use == 1 && len(saku.keys) > 0 {
 					saku.mu.RUnlock()
@@ -507,7 +502,7 @@ func handleForward(saku *safeAliveKeysAndURLs, enableCheckContainsChinese bool) 
 
 				googleTranslateText, err := googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
 				if err != nil {
-					slog.Warn("google translate failed", "error message", err.Error(), "latency", time.Since(startTime))
+					slog.Warn("google translate failed, the result did not change", "error message", err.Error(), "latency", time.Since(startTime))
 				} else {
 					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
@@ -555,9 +550,17 @@ func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 	}
 }
 
+var retargetLanguageName *regexp.Regexp
+
 func main() {
-	enableJSONOutput, enableDebug, enableCheckContainsChinese := parseArgs()
+	enableJSONOutput, enableDebug, targetLanguageName := parseArgs()
 	slog.SetDefault(newLogger(enableJSONOutput, enableDebug))
+
+	if targetLanguageName != "" {
+		retargetLanguageName = regexp.MustCompile(fmt.Sprintf("\\p{%s}", targetLanguageName))
+	} else {
+		retargetLanguageName = nil
+	}
 
 	saku := &safeAliveKeysAndURLs{}
 
@@ -583,7 +586,7 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/", handleForward(saku, enableCheckContainsChinese))
+	http.HandleFunc("/", handleForward(saku, retargetLanguageName))
 	http.HandleFunc("/check-alive", handleCheckAlive(saku))
 
 	slog.Info("server running on http://localhost:9000")
@@ -618,10 +621,10 @@ func newLogger(enableJSON, enableDebug bool) *slog.Logger {
 	return slog.New(handler)
 }
 
-func parseArgs() (enableJSONOutput, enableDebug, enableCheckContainsChinese bool) {
+func parseArgs() (enableJSONOutput, enableDebug bool, targetLanguageName string) {
 	flag.BoolVar(&enableJSONOutput, "j", false, "output JSON format")
 	flag.BoolVar(&enableDebug, "d", false, "output debugging message")
-	flag.BoolVar(&enableCheckContainsChinese, "c", false, "detect for missing translations, do not enable if the target language is not chinese")
+	flag.StringVar(&targetLanguageName, "D", "", "(suggest enabling if you will use deeplx, because it will result in more missing translation)detect for missing translations of target language, check your target language name in https://fo.wikipedia.org/wiki/Fyrimynd:ISO_15924_script_codes_and_related_Unicode_data")
 
 	flag.Parse()
 
