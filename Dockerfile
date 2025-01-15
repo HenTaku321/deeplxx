@@ -12,4 +12,5 @@ COPY --from=builder /main /main
 
 EXPOSE 9000
 
-CMD ["/main", "-c"]
+ENTRYPOINT ["/main"]
+CMD ["--D=Han"]
