@@ -136,6 +136,7 @@ func (d deepLReq) post(key string) (deepLResp, error) {
 
 func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
 	var slice *[]string
+	indexToRemove := -1
 
 	saku.mu.RLock()
 	if isKey {
@@ -143,19 +144,24 @@ func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bo
 	} else {
 		slice = &saku.urls
 	}
-	saku.mu.RUnlock()
-
 	for i, v := range *slice {
 		if v == keyOrURL {
-			saku.mu.Lock()
-			(*slice)[i] = (*slice)[len(*slice)-1]
-			*slice = (*slice)[:len(*slice)-1]
-			saku.mu.Unlock()
-			return true
+			indexToRemove = i
+			break
 		}
 	}
+	saku.mu.RUnlock()
 
-	return false
+	if indexToRemove == -1 {
+		return false
+	}
+
+	saku.mu.Lock()
+	(*slice)[indexToRemove] = (*slice)[len(*slice)-1]
+	*slice = (*slice)[:len(*slice)-1]
+	saku.mu.Unlock()
+
+	return true
 }
 
 func parseKeysAndURLs() ([]string, []string, error) {
@@ -309,7 +315,9 @@ func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
 	saku.keys, saku.urls = aliveKeys, aliveURLs
 	saku.mu.Unlock()
 
+	saku.mu.RLock()
 	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
+	saku.mu.RUnlock()
 
 	return len(keys), len(urls), nil
 }
@@ -541,8 +549,10 @@ func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 			return
 		}
 
+		saku.mu.RLock()
 		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
 			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
+		saku.mu.RUnlock()
 		if err != nil {
 			slog.Warn(err.Error())
 			return
