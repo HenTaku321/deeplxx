@@ -344,7 +344,7 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) 
 
 	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
 	if bReq {
-		return "", errors.Join(errGoogleTranslateFailed, errors.New("HTTP 400 (Bad Request)"))
+		return "", errors.Join(errGoogleTranslateFailed, errors.New("HTTP 400"))
 	}
 
 	err = json.Unmarshal(body, &result)
@@ -408,9 +408,8 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 				slog.Error("no available keys and urls")
 				http.Error(w, "no available keys and urls", http.StatusInternalServerError)
 				return
-			} else {
-				saku.mu.RUnlock()
 			}
+			saku.mu.RUnlock()
 		} else {
 			saku.mu.RUnlock()
 		}
@@ -495,12 +494,12 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 
 		var usedGoogleTranslate bool
 
-		if retargetLanguageName != nil {
+		if retargetLanguageName != nil && use == 1 {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
 				saku.mu.RLock()
-				if use == 1 && len(saku.keys) > 0 {
+				if len(saku.keys) > 0 {
 					saku.mu.RUnlock()
-					slog.Debug("detected missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime))
+					slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime))
 					forceUseDeepL = true
 					goto reTranslate
 				}
@@ -525,7 +524,7 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 			return
 		}
 
-		slog.Debug("translation info", "text", lxResp.Data, "key", key, "url", u, "force used deepl", forceUseDeepL, "used google translate", usedGoogleTranslate, "latency", time.Since(startTime))
+		slog.Debug("translation info", "text", lxResp.Data, "key", key, "url", u, "force used deepl", forceUseDeepL, "used google translate", usedGoogleTranslate, "latency", time.Since(startTime), "client", r.RemoteAddr)
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, string(j))
@@ -554,7 +553,7 @@ func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
 			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
 		saku.mu.RUnlock()
 		if err != nil {
-			slog.Warn(err.Error())
+			slog.Error(err.Error())
 			return
 		}
 	}
