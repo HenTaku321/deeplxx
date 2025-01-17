@@ -23,6 +23,7 @@ var (
 	errDeepLStatusNotOK                  = errors.New("")
 	errDeepLQuotaExceeded                = errors.New("quota exceeded")
 	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
+	errDeepLXStatusNotOK                 = errors.New("")
 	errIsChecking                        = errors.New("currently checking")
 )
 
@@ -133,14 +134,18 @@ func (p posts) deepLX(u string) (deepLXResp, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return deepLXResp{}, errors.Join(errDeepLXStatusNotOK, errors.New(resp.Status))
+	}
+
 	lxResp := deepLXResp{}
 
 	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
 		return deepLXResp{}, err
 	}
 
-	if resp.StatusCode != http.StatusOK && lxResp.Code != http.StatusOK { //some deeplx returns 0
-		return deepLXResp{}, errors.New(resp.Status)
+	if lxResp.Code != http.StatusOK {
+		return deepLXResp{}, errors.Join(errDeepLXStatusNotOK, errors.New(resp.Status))
 	}
 
 	return lxResp, nil
@@ -152,20 +157,30 @@ func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err.Error())
-			} else if errors.Is(err, errDeepLStatusNotOK) {
-				slog.Debug("deepl key status not ok", "key", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
-			} else if errors.Is(err, errDeepLQuotaExceeded) {
-				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", err.Error())
-			} else if errors.Is(err, errDeepLUnavailableForUnknownReasons) {
-				slog.Debug("deepl key is unavailable for unknown reason", "key", keyOrURL, "error message", lResp.Message)
+				return false, nil
 			}
-			return false, nil
+			if errors.Is(err, errDeepLStatusNotOK) {
+				slog.Debug("deepl key status not ok", "key", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
+				return false, nil
+			}
+			if errors.Is(err, errDeepLQuotaExceeded) {
+				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", err.Error())
+				return false, nil
+			}
+			if errors.Is(err, errDeepLUnavailableForUnknownReasons) {
+				slog.Debug("deepl key is unavailable for unknown reason", "key", keyOrURL, "error message", lResp.Message)
+				return false, nil
+			}
+			return false, err
 		}
 	} else {
 		_, err := p.deepLX(keyOrURL)
 		if err != nil {
-			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", err.Error())
-			return false, nil // no need to return the error
+			if errors.Is(err, errDeepLXStatusNotOK) {
+				slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
+				return false, nil
+			}
+			return false, err
 		}
 	}
 
@@ -204,18 +219,17 @@ func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bo
 
 func (saku *safeAliveKeysAndURLs) isChecking() bool {
 	saku.mu.RLock()
+	defer saku.mu.RUnlock()
 	if saku.isCheckingBool {
-		saku.mu.RUnlock()
 		return true
 	}
-	saku.mu.RUnlock()
 	return false
 }
 
 func (saku *safeAliveKeysAndURLs) setIsChecking(b bool) {
 	saku.mu.Lock()
+	defer saku.mu.Unlock()
 	saku.isCheckingBool = b
-	saku.mu.Unlock()
 }
 
 func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
@@ -243,11 +257,11 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 
 	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
-		slog.Error(err.Error())
 		return 0, 0, err
 	}
 
 	var wg sync.WaitGroup
+	var mu = &sync.Mutex{}
 
 	for _, key := range keys {
 		wg.Add(1)
@@ -255,14 +269,14 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 			defer wg.Done()
 			isAlive, err := p.checkAlive(true, k)
 			if err != nil {
-				slog.Error(err.Error())
+				slog.Error("error running check available", "key", k, "error message", err.Error())
 				return
 			}
 
 			if isAlive {
-				saku.mu.Lock()
+				mu.Lock()
 				aliveKeys = append(aliveKeys, k)
-				saku.mu.Unlock()
+				mu.Unlock()
 			}
 		}(key)
 	}
@@ -273,23 +287,21 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 			defer wg.Done()
 			isAlive, err := p.checkAlive(false, u)
 			if err != nil {
-				slog.Error(err.Error())
+				slog.Error("error available check", "url", u, "error message", err.Error())
 				return
 			}
 
 			if isAlive {
-				saku.mu.Lock()
+				mu.Lock()
 				aliveURLs = append(aliveURLs, u)
-				saku.mu.Unlock()
+				mu.Unlock()
 			}
 		}(url)
 	}
 
 	wg.Wait()
 
-	saku.mu.Lock()
 	saku.keys, saku.urls = aliveKeys, aliveURLs
-	saku.mu.Unlock()
 
 	saku.mu.RLock()
 	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
@@ -388,7 +400,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 
 		reqBody, err := io.ReadAll(r.Body)
 		if err != nil {
-			slog.Error(err.Error())
+			slog.Error("error reading request", "error message", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -411,7 +423,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 					return
 				}
 
-				slog.Error(err.Error())
+				slog.Error("error running check available", "error message", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -449,7 +461,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			key, u string
 		)
 
-		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil {
+		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil || lxReq.Text == "" {
 			slog.Warn("invalid request body")
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
@@ -480,11 +492,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			lResp, err := p.deepL(key)
 			if err != nil {
 				if saku.removeKeyOrURL(true, key) {
-					if lResp.Message == "" {
-						slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err.Error(), "text", lxReq.Text, "latency", time.Since(startTime))
-					} else {
-						slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", lResp.Message, "text", lxReq.Text, "latency", time.Since(startTime))
-					}
+					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", lResp.Message, "text", lxReq.Text, "latency", time.Since(startTime))
 				}
 				goto reTranslate
 			}
@@ -547,7 +555,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 
 		j, err := json.Marshal(lxResp)
 		if err != nil {
-			slog.Error(err.Error())
+			slog.Error("error marshalling json", "error message", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -561,7 +569,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 
 func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Debug(r.RemoteAddr + "request of rechecking")
+		slog.Debug(r.RemoteAddr + " request of rechecking")
 
 		totalKeys, totalURLs, err := saku.runCheck()
 		if err != nil {
@@ -571,17 +579,17 @@ func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 				return
 			}
 
-			slog.Warn(err.Error())
+			slog.Error("error running check available","error message",err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		saku.mu.RLock()
+		defer saku.mu.RUnlock()
 		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
 			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
-		saku.mu.RUnlock()
 		if err != nil {
-			slog.Error(err.Error())
+			slog.Error("error writing response","error message",err.Error())
 			return
 		}
 	}
@@ -603,7 +611,7 @@ func main() {
 
 	_, _, err := saku.runCheck()
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("error running check available","error message",err.Error())
 		return
 	}
 
@@ -618,7 +626,7 @@ func main() {
 					slog.Warn("currently rechecking")
 					continue
 				}
-				slog.Error(err.Error())
+				slog.Error("error running check available","error message",err.Error())
 			}
 		}
 	}()
