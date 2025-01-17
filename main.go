@@ -20,13 +20,10 @@ import (
 )
 
 var (
-	//errDeepLTooManyRequests              = errors.New("too many requests")
-	errDeepLStatusNotOK                 = errors.New("")
+	errDeepLStatusNotOK                  = errors.New("")
 	errDeepLQuotaExceeded                = errors.New("quota exceeded")
 	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
-	errDeepLXStatusNotOK                 = errors.New("")
 	errIsChecking                        = errors.New("currently checking")
-	errGoogleTranslateFailed             = errors.New("google translate failed")
 )
 
 type deepLReq struct {
@@ -100,10 +97,10 @@ func (p posts) deepL(key string) (deepLResp, error) {
 
 	lResp := deepLResp{}
 
-	if resp.StatusCode!=http.StatusOK{
-			return deepLResp{}, errors.Join(errDeepLStatusNotOK,errors.New(resp.Status))
+	if resp.StatusCode != http.StatusOK {
+		return deepLResp{}, errors.Join(errDeepLStatusNotOK, errors.New(resp.Status))
 	}
-	
+
 	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
 		return deepLResp{}, err
 	}
@@ -143,7 +140,7 @@ func (p posts) deepLX(u string) (deepLXResp, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK || lxResp.Code != http.StatusOK {
-		return deepLXResp{}, errors.Join(errDeepLXStatusNotOK, errors.New(resp.Status))
+		return deepLXResp{}, errors.New(resp.Status)
 	}
 
 	return lxResp, nil
@@ -154,11 +151,11 @@ func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
 		lResp, err := p.deepL(keyOrURL)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err)
+				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err.Error())
 			} else if errors.Is(err, errDeepLStatusNotOK) {
-				slog.Debug("deepl key status not ok", "key", keyOrURL, "error message", err)
+				slog.Debug("deepl key status not ok", "key", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
 			} else if errors.Is(err, errDeepLQuotaExceeded) {
-				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", err)
+				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", err.Error())
 			} else if errors.Is(err, errDeepLUnavailableForUnknownReasons) {
 				slog.Debug("deepl key is unavailable for unknown reason", "key", keyOrURL, "error message", lResp.Message)
 			}
@@ -167,7 +164,7 @@ func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
 	} else {
 		_, err := p.deepLX(keyOrURL)
 		if err != nil {
-			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", err)
+			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", err.Error())
 			return false, nil // no need to return the error
 		}
 	}
@@ -360,13 +357,13 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) 
 	}
 
 	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
-	if bReq {
-		return "", errors.Join(errGoogleTranslateFailed, errors.New("HTTP 400"))
+	if resp.StatusCode == http.StatusBadRequest || bReq {
+		return "", errors.New("400 Bad Request")
 	}
 
 	err = json.Unmarshal(body, &result)
 	if err != nil {
-		return "", errors.Join(errGoogleTranslateFailed, err)
+		return "", err
 	}
 
 	if len(result) > 0 {
@@ -381,7 +378,7 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) 
 
 		return cText, nil
 	} else {
-		return "", errGoogleTranslateFailed
+		return "", err
 	}
 }
 
@@ -528,7 +525,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 		if retargetLanguageName != nil && use == 1 || use == 2 {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
 				saku.mu.RLock()
-				if len(saku.keys) > 0 {
+				if use == 1 && len(saku.keys) > 0 {
 					saku.mu.RUnlock()
 					slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime))
 					forceUseDeepL = true
