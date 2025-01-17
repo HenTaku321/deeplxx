@@ -95,11 +95,11 @@ func (p posts) deepL(key string) (deepLResp, error) {
 	}
 	defer resp.Body.Close()
 
-	lResp := deepLResp{}
-
 	if resp.StatusCode != http.StatusOK {
 		return deepLResp{}, errors.Join(errDeepLStatusNotOK, errors.New(resp.Status))
 	}
+
+	lResp := deepLResp{}
 
 	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
 		return deepLResp{}, err
@@ -139,7 +139,7 @@ func (p posts) deepLX(u string) (deepLXResp, error) {
 		return deepLXResp{}, err
 	}
 
-	if resp.StatusCode != http.StatusOK || lxResp.Code != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && lxResp.Code != http.StatusOK { //some deeplx returns 0
 		return deepLXResp{}, errors.New(resp.Status)
 	}
 
