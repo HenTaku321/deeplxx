@@ -269,7 +269,7 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 			defer wg.Done()
 			isAlive, err := p.checkAlive(true, k)
 			if err != nil {
-				slog.Error("error running check available", "key", k, "error message", err.Error())
+				slog.Warn("error running check available", "key", k, "error message", err.Error())
 				return
 			}
 
@@ -287,7 +287,7 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 			defer wg.Done()
 			isAlive, err := p.checkAlive(false, u)
 			if err != nil {
-				slog.Error("error available check", "url", u, "error message", err.Error())
+				slog.Warn("error running check available", "url", u, "error message", err.Error())
 				return
 			}
 
@@ -423,7 +423,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 					return
 				}
 
-				slog.Error("error running check available", "error message", err.Error())
+				slog.Warn("error running check available", "error message", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -579,7 +579,7 @@ func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 				return
 			}
 
-			slog.Error("error running check available","error message",err.Error())
+			slog.Warn("error running check available", "error message", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -589,7 +589,7 @@ func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
 			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
 		if err != nil {
-			slog.Error("error writing response","error message",err.Error())
+			slog.Error("error writing response", "error message", err.Error())
 			return
 		}
 	}
@@ -611,7 +611,7 @@ func main() {
 
 	_, _, err := saku.runCheck()
 	if err != nil {
-		slog.Error("error running check available","error message",err.Error())
+		slog.Warn("error running check available", "error message", err.Error())
 		return
 	}
 
@@ -626,7 +626,7 @@ func main() {
 					slog.Warn("currently rechecking")
 					continue
 				}
-				slog.Error("error running check available","error message",err.Error())
+				slog.Warn("error running check available", "error message", err.Error())
 			}
 		}
 	}()
