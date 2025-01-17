@@ -14,10 +14,19 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+)
+
+var (
+	//errDeepLTooManyRequests              = errors.New("too many requests")
+	errDeepLStatusNotOK                 = errors.New("")
+	errDeepLQuotaExceeded                = errors.New("quota exceeded")
+	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
+	errDeepLXStatusNotOK                 = errors.New("")
+	errIsChecking                        = errors.New("currently checking")
+	errGoogleTranslateFailed             = errors.New("google translate failed")
 )
 
 type deepLReq struct {
@@ -49,45 +58,19 @@ type deepLXResp struct {
 }
 
 type safeAliveKeysAndURLs struct {
-	keys, urls []string
-	mu         sync.RWMutex
+	keys, urls     []string
+	mu             sync.RWMutex
+	isCheckingBool bool
 }
 
-func (d deepLXReq) post(u string) (deepLXResp, error) {
-	j, err := json.Marshal(d)
-	if err != nil {
-		return deepLXResp{}, err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(j))
-	if err != nil {
-		return deepLXResp{}, err
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return deepLXResp{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return deepLXResp{}, errors.New(resp.Status)
-	}
-
-	lxResp := deepLXResp{}
-
-	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
-		return deepLXResp{}, err
-	}
-
-	return lxResp, nil
+type posts struct {
+	deepLReq
+	deepLXReq
+	*http.Client
 }
 
-var errDeepLTooManyRequests = errors.New("too many requests")
-
-func (d deepLReq) post(key string) (deepLResp, error) {
-	j, err := json.Marshal(d)
+func (p posts) deepL(key string) (deepLResp, error) {
+	j, err := json.Marshal(p.deepLReq)
 	if err != nil {
 		return deepLResp{}, err
 	}
@@ -109,8 +92,7 @@ func (d deepLReq) post(key string) (deepLResp, error) {
 	req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := p.Client.Do(req)
 	if err != nil {
 		return deepLResp{}, err
 	}
@@ -118,20 +100,79 @@ func (d deepLReq) post(key string) (deepLResp, error) {
 
 	lResp := deepLResp{}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
+	if resp.StatusCode!=http.StatusOK{
+			return deepLResp{}, errors.Join(errDeepLStatusNotOK,errors.New(resp.Status))
+	}
+	
+	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
 		return deepLResp{}, err
 	}
 
-	if bytes.Contains(body, []byte("<title>429 Too Many Requests")) {
-		return deepLResp{}, errDeepLTooManyRequests
-	}
-
-	if err = json.NewDecoder(bytes.NewReader(body)).Decode(&lResp); err != nil {
-		return deepLResp{}, err
+	if lResp.Translations == nil {
+		if lResp.Message == "Quota Exceeded" {
+			return deepLResp{}, errDeepLQuotaExceeded
+		} else {
+			return deepLResp{}, errDeepLUnavailableForUnknownReasons
+		}
 	}
 
 	return lResp, nil
+}
+
+func (p posts) deepLX(u string) (deepLXResp, error) {
+	j, err := json.Marshal(p.deepLXReq)
+	if err != nil {
+		return deepLXResp{}, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(j))
+	if err != nil {
+		return deepLXResp{}, err
+	}
+
+	resp, err := p.Client.Do(req)
+	if err != nil {
+		return deepLXResp{}, err
+	}
+	defer resp.Body.Close()
+
+	lxResp := deepLXResp{}
+
+	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
+		return deepLXResp{}, err
+	}
+
+	if resp.StatusCode != http.StatusOK || lxResp.Code != http.StatusOK {
+		return deepLXResp{}, errors.Join(errDeepLXStatusNotOK, errors.New(resp.Status))
+	}
+
+	return lxResp, nil
+}
+
+func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
+	if isKey {
+		lResp, err := p.deepL(keyOrURL)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err)
+			} else if errors.Is(err, errDeepLStatusNotOK) {
+				slog.Debug("deepl key status not ok", "key", keyOrURL, "error message", err)
+			} else if errors.Is(err, errDeepLQuotaExceeded) {
+				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", err)
+			} else if errors.Is(err, errDeepLUnavailableForUnknownReasons) {
+				slog.Debug("deepl key is unavailable for unknown reason", "key", keyOrURL, "error message", lResp.Message)
+			}
+			return false, nil
+		}
+	} else {
+		_, err := p.deepLX(keyOrURL)
+		if err != nil {
+			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", err)
+			return false, nil // no need to return the error
+		}
+	}
+
+	return true, nil
 }
 
 func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
@@ -162,6 +203,102 @@ func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bo
 	saku.mu.Unlock()
 
 	return true
+}
+
+func (saku *safeAliveKeysAndURLs) isChecking() bool {
+	saku.mu.RLock()
+	if saku.isCheckingBool {
+		saku.mu.RUnlock()
+		return true
+	}
+	saku.mu.RUnlock()
+	return false
+}
+
+func (saku *safeAliveKeysAndURLs) setIsChecking(b bool) {
+	saku.mu.Lock()
+	saku.isCheckingBool = b
+	saku.mu.Unlock()
+}
+
+func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
+	if saku.isChecking() {
+		return 0, 0, errIsChecking
+	}
+
+	saku.setIsChecking(true)
+	defer func() { saku.setIsChecking(false) }()
+
+	p := posts{
+		deepLReq: deepLReq{
+			Text:       []string{"Hi"},
+			TargetLang: "zh",
+		},
+		deepLXReq: deepLXReq{
+			Text:       "Hi",
+			SourceLang: "en",
+			TargetLang: "zh",
+		},
+		Client: &http.Client{Timeout: 5 * time.Second},
+	}
+
+	var aliveKeys, aliveURLs []string
+
+	keys, urls, err := parseKeysAndURLs()
+	if err != nil {
+		slog.Error(err.Error())
+		return 0, 0, err
+	}
+
+	var wg sync.WaitGroup
+
+	for _, key := range keys {
+		wg.Add(1)
+		go func(k string) {
+			defer wg.Done()
+			isAlive, err := p.checkAlive(true, k)
+			if err != nil {
+				slog.Error(err.Error())
+				return
+			}
+
+			if isAlive {
+				saku.mu.Lock()
+				aliveKeys = append(aliveKeys, k)
+				saku.mu.Unlock()
+			}
+		}(key)
+	}
+
+	for _, url := range urls {
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			isAlive, err := p.checkAlive(false, u)
+			if err != nil {
+				slog.Error(err.Error())
+				return
+			}
+
+			if isAlive {
+				saku.mu.Lock()
+				aliveURLs = append(aliveURLs, u)
+				saku.mu.Unlock()
+			}
+		}(url)
+	}
+
+	wg.Wait()
+
+	saku.mu.Lock()
+	saku.keys, saku.urls = aliveKeys, aliveURLs
+	saku.mu.Unlock()
+
+	saku.mu.RLock()
+	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
+	saku.mu.RUnlock()
+
+	return len(keys), len(urls), nil
 }
 
 func parseKeysAndURLs() ([]string, []string, error) {
@@ -203,126 +340,6 @@ func parseKeysAndURLs() ([]string, []string, error) {
 
 	return keys, urls, nil
 }
-
-func checkAlive(isKey bool, keyOrURL string) (bool, error) {
-	if isKey {
-		lReq := deepLReq{
-			Text:       []string{"test"},
-			TargetLang: "zh",
-		}
-
-		lResp, err := lReq.post(keyOrURL)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err)
-			}
-			if errors.Is(err, errDeepLTooManyRequests) {
-				slog.Debug("deepl key has too many requests", "key", keyOrURL, "error message", err)
-			}
-			return false, nil
-		}
-
-		if lResp.Translations == nil {
-			if lResp.Message == "Quota Exceeded" {
-				slog.Debug("deepl key has quota exceeded", "key", keyOrURL, "error message", lResp.Message)
-			} else {
-				slog.Debug("deepl key is unavailable for unknown reason", "key", keyOrURL, "error message", lResp.Message)
-			}
-			return false, nil
-		}
-	} else {
-		lxReq := deepLXReq{
-			Text:       "test",
-			SourceLang: "en",
-			TargetLang: "zh",
-		}
-
-		lxResp, err := lxReq.post(keyOrURL)
-		if err != nil {
-			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", err)
-			return false, nil // 无需返回错误
-		}
-
-		if lxResp.Code != http.StatusOK {
-			slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", "HTTP "+strconv.Itoa(lxResp.Code))
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-var isChecking bool
-var errIsChecking = errors.New("currently checking")
-
-func runCheck(saku *safeAliveKeysAndURLs) (int, int, error) {
-	if isChecking {
-		return 0, 0, errIsChecking
-	}
-
-	isChecking = true
-	defer func() { isChecking = false }()
-
-	var aliveKeys, aliveURLs []string
-
-	keys, urls, err := parseKeysAndURLs()
-	if err != nil {
-		slog.Error(err.Error())
-		return 0, 0, err
-	}
-
-	var wg sync.WaitGroup
-
-	for _, key := range keys {
-		wg.Add(1)
-		go func(k string) {
-			defer wg.Done()
-			isAlive, err := checkAlive(true, k)
-			if err != nil {
-				slog.Error(err.Error())
-				return
-			}
-
-			if isAlive {
-				saku.mu.Lock()
-				aliveKeys = append(aliveKeys, k)
-				saku.mu.Unlock()
-			}
-		}(key)
-	}
-
-	for _, url := range urls {
-		wg.Add(1)
-		go func(u string) {
-			defer wg.Done()
-			isAlive, err := checkAlive(false, u)
-			if err != nil {
-				slog.Error(err.Error())
-				return
-			}
-
-			if isAlive {
-				saku.mu.Lock()
-				aliveURLs = append(aliveURLs, u)
-				saku.mu.Unlock()
-			}
-		}(url)
-	}
-
-	wg.Wait()
-
-	saku.mu.Lock()
-	saku.keys, saku.urls = aliveKeys, aliveURLs
-	saku.mu.Unlock()
-
-	saku.mu.RLock()
-	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
-	saku.mu.RUnlock()
-
-	return len(keys), len(urls), nil
-}
-
-var errGoogleTranslateFailed = errors.New("google translate failed")
 
 func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) {
 	var text []string
@@ -368,7 +385,7 @@ func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) 
 	}
 }
 
-func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Regexp) http.HandlerFunc {
+func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
@@ -389,7 +406,7 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 
 			slog.Debug("no available keys and urls, start rechecking")
 
-			_, _, err = runCheck(saku)
+			_, _, err = saku.runCheck()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Debug("currently rechecking")
@@ -414,7 +431,7 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 			saku.mu.RUnlock()
 		}
 
-		var use int // 0 = key, 1 = url
+		var use int // 0 = key, 1 = url, 2 = accidentally no key when force use deepL translations
 
 		if !forceUseDeepL {
 			saku.mu.RLock()
@@ -441,6 +458,12 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 			return
 		}
 
+		saku.mu.RLock()
+		if len(saku.keys) == 0 && forceUseDeepL == true {
+			use = 2
+		}
+		saku.mu.RUnlock()
+
 		if use == 0 {
 			saku.mu.RLock()
 			keyIndex := rand.IntN(len(saku.keys))
@@ -452,7 +475,12 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 			lReq.TargetLang = lxReq.TargetLang
 			lReq.Text[0] = lxReq.Text
 
-			lResp, err := lReq.post(key)
+			p := posts{
+				deepLReq: lReq,
+				Client:   &http.Client{},
+			}
+
+			lResp, err := p.deepL(key)
 			if err != nil {
 				if saku.removeKeyOrURL(true, key) {
 					if lResp.Message == "" {
@@ -473,19 +501,22 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 			lxResp.Code = http.StatusOK
 			lxResp.Data = lResp.Translations[0].Text
 			lxResp.Alternatives[0] = lResp.Translations[0].Text
-		} else {
+		} else if use == 1 {
 			saku.mu.RLock()
 			urlIndex := rand.IntN(len(saku.urls))
 			u = saku.urls[urlIndex]
 			saku.mu.RUnlock()
 
-			lxResp, err = lxReq.post(u)
-			if err != nil || lxResp.Code != http.StatusOK {
+			p := posts{
+				deepLXReq: lxReq,
+				Client:    &http.Client{Timeout: 5 * time.Second},
+			}
+
+			lxResp, err = p.deepLX(u)
+			if err != nil {
 				if saku.removeKeyOrURL(false, u) {
 					if err != nil {
 						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", err.Error(), "text", lxReq.Text, "latency", time.Since(startTime))
-					} else {
-						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", "HTTP "+strconv.Itoa(lxResp.Code), "text", lxReq.Text, "latency", time.Since(startTime))
 					}
 				}
 				goto reTranslate
@@ -494,7 +525,7 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 
 		var usedGoogleTranslate bool
 
-		if retargetLanguageName != nil && use == 1 {
+		if retargetLanguageName != nil && use == 1 || use == 2 {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
 				saku.mu.RLock()
 				if len(saku.keys) > 0 {
@@ -531,11 +562,11 @@ func handleForward(saku *safeAliveKeysAndURLs, retargetLanguageName *regexp.Rege
 	}
 }
 
-func handleCheckAlive(saku *safeAliveKeysAndURLs) http.HandlerFunc {
+func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + "request of rechecking")
 
-		totalKeys, totalURLs, err := runCheck(saku)
+		totalKeys, totalURLs, err := saku.runCheck()
 		if err != nil {
 			if errors.Is(err, errIsChecking) {
 				slog.Warn("currently rechecking")
@@ -573,7 +604,7 @@ func main() {
 
 	saku := &safeAliveKeysAndURLs{}
 
-	_, _, err := runCheck(saku)
+	_, _, err := saku.runCheck()
 	if err != nil {
 		slog.Error(err.Error())
 		return
@@ -584,7 +615,7 @@ func main() {
 
 	go func() {
 		for range ticker.C {
-			_, _, err = runCheck(saku)
+			_, _, err = saku.runCheck()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Warn("currently rechecking")
@@ -595,8 +626,8 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/", handleForward(saku, retargetLanguageName))
-	http.HandleFunc("/check-alive", handleCheckAlive(saku))
+	http.HandleFunc("/", saku.handleTranslate(retargetLanguageName))
+	http.HandleFunc("/check-alive", saku.handleCheckAlive())
 
 	slog.Info("server running on http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
