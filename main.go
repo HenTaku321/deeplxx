@@ -492,13 +492,8 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			lResp, err := p.deepL(key)
 			if err != nil {
 				if saku.removeKeyOrURL(true, key) {
-					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", lResp.Message, "text", lxReq.Text, "latency", time.Since(startTime))
+					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime))
 				}
-				goto reTranslate
-			}
-
-			if len(lResp.Translations) == 0 {
-				slog.Warn("deepl translate failed, retranslate", "error message", lResp.Message, "text", lxReq.Text, "latency", time.Since(startTime))
 				goto reTranslate
 			}
 
