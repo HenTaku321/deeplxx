@@ -310,6 +310,63 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 	return len(keys), len(urls), nil
 }
 
+func (p posts) googleTranslate() (string, error) {
+	var text []string
+	var responseData []interface{}
+	var sb strings.Builder
+
+	sb.WriteString("https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=")
+	sb.WriteString(p.deepLXReq.SourceLang)
+	sb.WriteString("&tl=")
+	sb.WriteString(p.deepLXReq.TargetLang)
+	sb.WriteString("&dt=t")
+	if p.deepLXReq.TagHandling != "" {
+		sb.WriteString("&format=")
+		sb.WriteString(p.deepLXReq.TagHandling)
+	}
+	sb.WriteString("&q=")
+	sb.WriteString(url.QueryEscape(p.deepLXReq.Text))
+
+	resp, err := p.Client.Get(sb.String())
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
+	if resp.StatusCode == http.StatusBadRequest || bReq {
+		return "", errors.New("400 Bad Request")
+	}
+
+	err = json.Unmarshal(body, &responseData)
+	if err != nil {
+		return "", err
+	}
+
+	if len(responseData) > 0 {
+		r := responseData[0]
+		if inner, ok := r.([]interface{}); ok {
+			for _, slice := range inner {
+				for _, translatedText := range slice.([]interface{}) {
+					text = append(text, fmt.Sprintf("%v", translatedText))
+					break
+				}
+			}
+		} else {
+			return "", fmt.Errorf("unexpected response structure: %v", r)
+		}
+		cText := strings.Join(text, "")
+		return cText, nil
+	} else {
+		return "", err
+	}
+}
+
 func parseKeysAndURLs() ([]string, []string, error) {
 	var keys []string
 	var urls []string
@@ -350,50 +407,6 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	return keys, urls, nil
 }
 
-func googleTranslate(sourceText, sourceLang, targetLang string) (string, error) {
-	var text []string
-	var result []interface{}
-
-	u := "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
-		sourceLang + "&tl=" + targetLang + "&dt=t&q=" + url.QueryEscape(sourceText)
-
-	resp, err := http.Get(u)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
-	if resp.StatusCode == http.StatusBadRequest || bReq {
-		return "", errors.New("400 Bad Request")
-	}
-
-	err = json.Unmarshal(body, &result)
-	if err != nil {
-		return "", err
-	}
-
-	if len(result) > 0 {
-		inner := result[0]
-		for _, slice := range inner.([]interface{}) {
-			for _, translatedText := range slice.([]interface{}) {
-				text = append(text, fmt.Sprintf("%v", translatedText))
-				break
-			}
-		}
-		cText := strings.Join(text, "")
-
-		return cText, nil
-	} else {
-		return "", err
-	}
-}
-
 func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
@@ -405,7 +418,34 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			return
 		}
 
-		var forceUseDeepL bool
+		var (
+			lxReq  deepLXReq
+			lxResp deepLXResp
+
+			forceUseDeepL, usedGoogleTranslate bool
+
+			googleTranslateText string
+			googleTranslateErr  error
+			googleTranslateDone = make(chan struct{})
+		)
+
+		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil || lxReq.Text == "" {
+			slog.Warn("invalid request body")
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		p := posts{
+			deepLXReq: lxReq,
+			Client:    &http.Client{Timeout: 5 * time.Second},
+		}
+
+		go func() {
+			saku.mu.Lock()
+			googleTranslateText, googleTranslateErr = p.googleTranslate()
+			saku.mu.Unlock()
+			googleTranslateDone <- struct{}{}
+		}()
 
 	reTranslate:
 
@@ -454,18 +494,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			saku.mu.RUnlock()
 		}
 
-		var (
-			lxReq  deepLXReq
-			lxResp deepLXResp
-
-			key, u string
-		)
-
-		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil || lxReq.Text == "" {
-			slog.Warn("invalid request body")
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
+		var key, u string
 
 		saku.mu.RLock()
 		if len(saku.keys) == 0 && forceUseDeepL == true {
@@ -484,10 +513,9 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			lReq.TargetLang = lxReq.TargetLang
 			lReq.Text[0] = lxReq.Text
 
-			p := posts{
-				deepLReq: lReq,
-				Client:   &http.Client{},
-			}
+			saku.mu.Lock()
+			p.deepLReq = lReq
+			saku.mu.Unlock()
 
 			lResp, err := p.deepL(key)
 			if err != nil {
@@ -507,11 +535,6 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			u = saku.urls[urlIndex]
 			saku.mu.RUnlock()
 
-			p := posts{
-				deepLXReq: lxReq,
-				Client:    &http.Client{Timeout: 5 * time.Second},
-			}
-
 			lxResp, err = p.deepLX(u)
 			if err != nil {
 				if saku.removeKeyOrURL(false, u) {
@@ -522,8 +545,6 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 				goto reTranslate
 			}
 		}
-
-		var usedGoogleTranslate bool
 
 		if retargetLanguageName != nil && use == 1 || use == 2 {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
@@ -538,9 +559,11 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 
 				slog.Debug("detected deepl is also missing translation, or has no available key, retranslate with google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime))
 
-				googleTranslateText, err := googleTranslate(lxReq.Text, lxReq.SourceLang, lxReq.TargetLang)
-				if err != nil {
-					slog.Warn("google translate failed, the result did not change", "error message", err.Error(), "latency", time.Since(startTime))
+				<-googleTranslateDone
+				if googleTranslateErr != nil {
+					slog.Warn("google translate failed, the responseData did not change", "error message", googleTranslateErr.Error(), "latency", time.Since(startTime))
+				} else if !retargetLanguageName.MatchString(googleTranslateText) {
+					slog.Warn("detected google is also missing translation, the responseData did not change", "text", googleTranslateText, "latency", time.Since(startTime))
 				} else {
 					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
