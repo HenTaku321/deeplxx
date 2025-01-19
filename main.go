@@ -57,7 +57,7 @@ type deepLXResp struct {
 
 type safeAliveKeysAndURLs struct {
 	keys, urls     []string
-	mu             sync.RWMutex
+	mu             *sync.RWMutex
 	isCheckingBool bool
 }
 
@@ -67,7 +67,7 @@ type posts struct {
 	*http.Client
 }
 
-func (p posts) deepL(key string) (deepLResp, error) {
+func (p *posts) deepL(key string) (deepLResp, error) {
 	j, err := json.Marshal(p.deepLReq)
 	if err != nil {
 		return deepLResp{}, err
@@ -106,7 +106,7 @@ func (p posts) deepL(key string) (deepLResp, error) {
 		return deepLResp{}, err
 	}
 
-	if lResp.Translations == nil {
+	if len(lResp.Translations) == 0 {
 		if lResp.Message == "Quota Exceeded" {
 			return deepLResp{}, errDeepLQuotaExceeded
 		} else {
@@ -117,7 +117,7 @@ func (p posts) deepL(key string) (deepLResp, error) {
 	return lResp, nil
 }
 
-func (p posts) deepLX(u string) (deepLXResp, error) {
+func (p *posts) deepLX(u string) (deepLXResp, error) {
 	j, err := json.Marshal(p.deepLXReq)
 	if err != nil {
 		return deepLXResp{}, err
@@ -151,7 +151,7 @@ func (p posts) deepLX(u string) (deepLXResp, error) {
 	return lxResp, nil
 }
 
-func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
+func (p *posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
 	if isKey {
 		lResp, err := p.deepL(keyOrURL)
 		if err != nil {
@@ -180,6 +180,10 @@ func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
 				slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
 				return false, nil
 			}
+			//if errors.Is(err) {
+			//	slog.Debug("deeplx url is timeout", "url", keyOrURL, "error message", err.Error())
+			//	return false, nil
+			//}
 			return false, err
 		}
 	}
@@ -187,11 +191,70 @@ func (p posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
 	return true, nil
 }
 
+func (p *posts) googleTranslate() (string, error) {
+	var text []string
+	var responseData []interface{}
+	var sb strings.Builder
+
+	sb.WriteString("https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=")
+	sb.WriteString(p.deepLXReq.SourceLang)
+	sb.WriteString("&tl=")
+	sb.WriteString(p.deepLXReq.TargetLang)
+	sb.WriteString("&dt=t")
+	if p.deepLXReq.TagHandling != "" {
+		sb.WriteString("&format=")
+		sb.WriteString(p.deepLXReq.TagHandling)
+	}
+	sb.WriteString("&q=")
+	sb.WriteString(url.QueryEscape(p.deepLXReq.Text))
+
+	resp, err := p.Client.Get(sb.String())
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
+	if resp.StatusCode == http.StatusBadRequest || bReq {
+		return "", errors.New("400 Bad Request")
+	}
+
+	err = json.Unmarshal(body, &responseData)
+	if err != nil {
+		return "", err
+	}
+
+	if len(responseData) > 0 {
+		r := responseData[0]
+		if inner, ok := r.([]interface{}); ok {
+			for _, slice := range inner {
+				for _, translatedText := range slice.([]interface{}) {
+					text = append(text, fmt.Sprintf("%v", translatedText))
+					break
+				}
+			}
+		} else {
+			return "", fmt.Errorf("unexpected response structure: %v", r)
+		}
+		cText := strings.Join(text, "")
+		return cText, nil
+	} else {
+		return "", err
+	}
+}
+
 func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
 	var slice *[]string
 	indexToRemove := -1
 
-	saku.mu.RLock()
+	saku.mu.Lock()
+	defer saku.mu.Unlock()
+
 	if isKey {
 		slice = &saku.keys
 	} else {
@@ -203,16 +266,13 @@ func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bo
 			break
 		}
 	}
-	saku.mu.RUnlock()
 
 	if indexToRemove == -1 {
 		return false
 	}
 
-	saku.mu.Lock()
 	(*slice)[indexToRemove] = (*slice)[len(*slice)-1]
 	*slice = (*slice)[:len(*slice)-1]
-	saku.mu.Unlock()
 
 	return true
 }
@@ -301,70 +361,15 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 
 	wg.Wait()
 
+	saku.mu.Lock()
 	saku.keys, saku.urls = aliveKeys, aliveURLs
+	saku.mu.Unlock()
 
 	saku.mu.RLock()
 	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
 	saku.mu.RUnlock()
 
 	return len(keys), len(urls), nil
-}
-
-func (p posts) googleTranslate() (string, error) {
-	var text []string
-	var responseData []interface{}
-	var sb strings.Builder
-
-	sb.WriteString("https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=")
-	sb.WriteString(p.deepLXReq.SourceLang)
-	sb.WriteString("&tl=")
-	sb.WriteString(p.deepLXReq.TargetLang)
-	sb.WriteString("&dt=t")
-	if p.deepLXReq.TagHandling != "" {
-		sb.WriteString("&format=")
-		sb.WriteString(p.deepLXReq.TagHandling)
-	}
-	sb.WriteString("&q=")
-	sb.WriteString(url.QueryEscape(p.deepLXReq.Text))
-
-	resp, err := p.Client.Get(sb.String())
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
-	if resp.StatusCode == http.StatusBadRequest || bReq {
-		return "", errors.New("400 Bad Request")
-	}
-
-	err = json.Unmarshal(body, &responseData)
-	if err != nil {
-		return "", err
-	}
-
-	if len(responseData) > 0 {
-		r := responseData[0]
-		if inner, ok := r.([]interface{}); ok {
-			for _, slice := range inner {
-				for _, translatedText := range slice.([]interface{}) {
-					text = append(text, fmt.Sprintf("%v", translatedText))
-					break
-				}
-			}
-		} else {
-			return "", fmt.Errorf("unexpected response structure: %v", r)
-		}
-		cText := strings.Join(text, "")
-		return cText, nil
-	} else {
-		return "", err
-	}
 }
 
 func parseKeysAndURLs() ([]string, []string, error) {
@@ -435,15 +440,19 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			return
 		}
 
+		lReq := deepLReq{}
+		lReq.Text = make([]string, 1)
+		lReq.TargetLang = lxReq.TargetLang
+		lReq.Text[0] = lxReq.Text
+
 		p := posts{
+			deepLReq:  lReq,
 			deepLXReq: lxReq,
 			Client:    &http.Client{Timeout: 5 * time.Second},
 		}
 
 		go func() {
-			saku.mu.Lock()
 			googleTranslateText, googleTranslateErr = p.googleTranslate()
-			saku.mu.Unlock()
 			googleTranslateDone <- struct{}{}
 		}()
 
@@ -508,15 +517,6 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			key = (saku.keys)[keyIndex]
 			saku.mu.RUnlock()
 
-			lReq := deepLReq{}
-			lReq.Text = make([]string, 1)
-			lReq.TargetLang = lxReq.TargetLang
-			lReq.Text[0] = lxReq.Text
-
-			saku.mu.Lock()
-			p.deepLReq = lReq
-			saku.mu.Unlock()
-
 			lResp, err := p.deepL(key)
 			if err != nil {
 				if saku.removeKeyOrURL(true, key) {
@@ -539,7 +539,7 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			if err != nil {
 				if saku.removeKeyOrURL(false, u) {
 					if err != nil {
-						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", err.Error(), "text", lxReq.Text, "latency", time.Since(startTime))
+						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime))
 					}
 				}
 				goto reTranslate
@@ -625,7 +625,9 @@ func main() {
 		retargetLanguageName = nil
 	}
 
-	saku := &safeAliveKeysAndURLs{}
+	saku := &safeAliveKeysAndURLs{
+		mu: new(sync.RWMutex),
+	}
 
 	_, _, err := saku.runCheck()
 	if err != nil {
@@ -655,7 +657,8 @@ func main() {
 	slog.Info("server running on http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
 	if err != nil {
-		panic(err)
+		slog.Error(err.Error())
+		return
 	}
 }
 
