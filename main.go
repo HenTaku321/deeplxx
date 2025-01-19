@@ -57,7 +57,7 @@ type deepLXResp struct {
 
 type safeAliveKeysAndURLs struct {
 	keys, urls     []string
-	mu             *sync.RWMutex
+	mu             sync.RWMutex
 	isCheckingBool bool
 }
 
@@ -248,17 +248,17 @@ func (p *posts) googleTranslate() (string, error) {
 	}
 }
 
-func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
+func (sakau *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
 	var slice *[]string
 	indexToRemove := -1
 
-	saku.mu.Lock()
-	defer saku.mu.Unlock()
+	sakau.mu.Lock()
+	defer sakau.mu.Unlock()
 
 	if isKey {
-		slice = &saku.keys
+		slice = &sakau.keys
 	} else {
-		slice = &saku.urls
+		slice = &sakau.urls
 	}
 	for i, v := range *slice {
 		if v == keyOrURL {
@@ -277,28 +277,28 @@ func (saku *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bo
 	return true
 }
 
-func (saku *safeAliveKeysAndURLs) isChecking() bool {
-	saku.mu.RLock()
-	defer saku.mu.RUnlock()
-	if saku.isCheckingBool {
+func (sakau *safeAliveKeysAndURLs) isChecking() bool {
+	sakau.mu.RLock()
+	defer sakau.mu.RUnlock()
+	if sakau.isCheckingBool {
 		return true
 	}
 	return false
 }
 
-func (saku *safeAliveKeysAndURLs) setIsChecking(b bool) {
-	saku.mu.Lock()
-	defer saku.mu.Unlock()
-	saku.isCheckingBool = b
+func (sakau *safeAliveKeysAndURLs) setIsChecking(b bool) {
+	sakau.mu.Lock()
+	defer sakau.mu.Unlock()
+	sakau.isCheckingBool = b
 }
 
-func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
-	if saku.isChecking() {
+func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
+	if sakau.isChecking() {
 		return 0, 0, errIsChecking
 	}
 
-	saku.setIsChecking(true)
-	defer func() { saku.setIsChecking(false) }()
+	sakau.setIsChecking(true)
+	defer func() { sakau.setIsChecking(false) }()
 
 	p := posts{
 		deepLReq: deepLReq{
@@ -329,7 +329,7 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 			defer wg.Done()
 			isAlive, err := p.checkAlive(true, k)
 			if err != nil {
-				slog.Warn("error running check available", "key", k, "error message", err.Error())
+				slog.Warn("error checking available", "key", k, "error message", err.Error())
 				return
 			}
 
@@ -347,7 +347,7 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 			defer wg.Done()
 			isAlive, err := p.checkAlive(false, u)
 			if err != nil {
-				slog.Warn("error running check available", "url", u, "error message", err.Error())
+				slog.Warn("error checking available", "url", u, "error message", err.Error())
 				return
 			}
 
@@ -361,15 +361,33 @@ func (saku *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 
 	wg.Wait()
 
-	saku.mu.Lock()
-	saku.keys, saku.urls = aliveKeys, aliveURLs
-	saku.mu.Unlock()
+	sakau.mu.Lock()
+	sakau.keys, sakau.urls = aliveKeys, aliveURLs
+	sakau.mu.Unlock()
 
-	saku.mu.RLock()
-	slog.Info("available check", "all keys count", len(keys), "available keys count", len(saku.keys), "all urls count", len(urls), "available urls count", len(saku.urls))
-	saku.mu.RUnlock()
+	sakau.mu.RLock()
+	slog.Info("available check", "all keys count", len(keys), "available keys count", len(sakau.keys), "all urls count", len(urls), "available urls count", len(sakau.urls))
+	sakau.mu.RUnlock()
 
 	return len(keys), len(urls), nil
+}
+
+func (sakau *safeAliveKeysAndURLs) getRandomKey() string {
+	sakau.mu.RLock()
+	defer sakau.mu.RUnlock()
+	if len(sakau.keys) == 0 {
+		return ""
+	}
+	return sakau.keys[rand.IntN(len(sakau.keys))]
+}
+
+func (sakau *safeAliveKeysAndURLs) getRandomURL() string {
+	sakau.mu.RLock()
+	defer sakau.mu.RUnlock()
+	if len(sakau.urls) == 0 {
+		return ""
+	}
+	return sakau.urls[rand.IntN(len(sakau.urls))]
 }
 
 func parseKeysAndURLs() ([]string, []string, error) {
@@ -412,7 +430,7 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	return keys, urls, nil
 }
 
-func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
+func (sakau *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
@@ -458,69 +476,59 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 
 	reTranslate:
 
-		saku.mu.RLock()
-		if len(saku.keys) == 0 && len(saku.urls) == 0 {
-			saku.mu.RUnlock()
+		if sakau.getRandomKey() == "" && sakau.getRandomURL() == "" {
 
 			slog.Debug("no available keys and urls, start rechecking")
 
-			_, _, err = saku.runCheck()
+			_, _, err = sakau.runCheck()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Debug("currently rechecking")
-					http.Error(w, "no available keys or urls, currently rechecking", http.StatusInternalServerError)
+					http.Error(w, "no available keys or urls, currently rechecking, try again later", http.StatusInternalServerError)
 					return
 				}
 
-				slog.Warn("error running check available", "error message", err.Error())
+				slog.Warn("error checking available", "error message", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
-			saku.mu.RLock()
-			if len(saku.keys) == 0 && len(saku.urls) == 0 {
-				saku.mu.RUnlock()
+			if sakau.getRandomKey() == "" && sakau.getRandomURL() == "" {
 				slog.Error("no available keys and urls")
 				http.Error(w, "no available keys and urls", http.StatusInternalServerError)
 				return
 			}
-			saku.mu.RUnlock()
-		} else {
-			saku.mu.RUnlock()
 		}
 
 		var use int // 0 = key, 1 = url, 2 = accidentally no key when force use deepL translations
 
 		if !forceUseDeepL {
-			saku.mu.RLock()
-			if len(saku.keys) > 0 && len(saku.urls) > 0 {
+			sakau.mu.RLock()
+			if len(sakau.keys) > 0 && len(sakau.urls) > 0 {
 				use = rand.IntN(2)
-			} else if len(saku.keys) == 0 {
+			} else if len(sakau.keys) == 0 {
 				use = 1
-			} // else if len(saku.urls) == 0 {
+			} // else if len(sakau.urls) == 0 {
 			//	use = 0
 			//}
-			saku.mu.RUnlock()
+			sakau.mu.RUnlock()
 		}
 
 		var key, u string
 
-		saku.mu.RLock()
-		if len(saku.keys) == 0 && forceUseDeepL == true {
+		sakau.mu.RLock()
+		if len(sakau.keys) == 0 && forceUseDeepL == true {
 			use = 2
 		}
-		saku.mu.RUnlock()
+		sakau.mu.RUnlock()
 
 		if use == 0 {
-			saku.mu.RLock()
-			keyIndex := rand.IntN(len(saku.keys))
-			key = (saku.keys)[keyIndex]
-			saku.mu.RUnlock()
+			key = sakau.getRandomKey()
 
 			lResp, err := p.deepL(key)
 			if err != nil {
-				if saku.removeKeyOrURL(true, key) {
-					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime))
+				if sakau.removeKeyOrURL(true, key) {
+					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
@@ -530,17 +538,12 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			lxResp.Data = lResp.Translations[0].Text
 			lxResp.Alternatives[0] = lResp.Translations[0].Text
 		} else if use == 1 {
-			saku.mu.RLock()
-			urlIndex := rand.IntN(len(saku.urls))
-			u = saku.urls[urlIndex]
-			saku.mu.RUnlock()
+			u = sakau.getRandomURL()
 
 			lxResp, err = p.deepLX(u)
 			if err != nil {
-				if saku.removeKeyOrURL(false, u) {
-					if err != nil {
-						slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime))
-					}
+				if sakau.removeKeyOrURL(false, u) {
+					slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
@@ -548,22 +551,19 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 
 		if retargetLanguageName != nil && use == 1 || use == 2 {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
-				saku.mu.RLock()
-				if use == 1 && len(saku.keys) > 0 {
-					saku.mu.RUnlock()
-					slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime))
+				if use == 1 && sakau.getRandomKey() != "" {
+					slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
 					forceUseDeepL = true
 					goto reTranslate
 				}
-				saku.mu.RUnlock()
 
-				slog.Debug("detected deepl is also missing translation, or has no available key, retranslate with google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime))
+				slog.Debug("detected deepl is also missing translation, or has no available key, retranslate with google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
 
 				<-googleTranslateDone
 				if googleTranslateErr != nil {
-					slog.Warn("google translate failed, the responseData did not change", "error message", googleTranslateErr.Error(), "latency", time.Since(startTime))
+					slog.Warn("google translate failed, the responseData did not change", "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
 				} else if !retargetLanguageName.MatchString(googleTranslateText) {
-					slog.Warn("detected google is also missing translation, the responseData did not change", "text", googleTranslateText, "latency", time.Since(startTime))
+					slog.Debug("detected google is also missing translation, the responseData did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
 				} else {
 					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
@@ -578,18 +578,18 @@ func (saku *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.R
 			return
 		}
 
-		slog.Debug("translation info", "text", lxResp.Data, "key", key, "url", u, "force used deepl", forceUseDeepL, "used google translate", usedGoogleTranslate, "latency", time.Since(startTime), "client", r.RemoteAddr)
+		slog.Debug("translation info", "text", lxResp.Data, "key", key, "url", u, "force used deepl", forceUseDeepL, "used google translate", usedGoogleTranslate, "latency", time.Since(startTime).String(), "client", r.RemoteAddr)
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, string(j))
 	}
 }
 
-func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
+func (sakau *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + " request of rechecking")
 
-		totalKeys, totalURLs, err := saku.runCheck()
+		totalKeys, totalURLs, err := sakau.runCheck()
 		if err != nil {
 			if errors.Is(err, errIsChecking) {
 				slog.Warn("currently rechecking")
@@ -597,15 +597,15 @@ func (saku *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 				return
 			}
 
-			slog.Warn("error running check available", "error message", err.Error())
+			slog.Warn("error checking available", "error message", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		saku.mu.RLock()
-		defer saku.mu.RUnlock()
+		sakau.mu.RLock()
+		defer sakau.mu.RUnlock()
 		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
-			totalKeys, len(saku.keys), totalURLs, len(saku.urls))))
+			totalKeys, len(sakau.keys), totalURLs, len(sakau.urls))))
 		if err != nil {
 			slog.Error("error writing response", "error message", err.Error())
 			return
@@ -625,13 +625,11 @@ func main() {
 		retargetLanguageName = nil
 	}
 
-	saku := &safeAliveKeysAndURLs{
-		mu: new(sync.RWMutex),
-	}
+	sakau := &safeAliveKeysAndURLs{}
 
-	_, _, err := saku.runCheck()
+	_, _, err := sakau.runCheck()
 	if err != nil {
-		slog.Warn("error running check available", "error message", err.Error())
+		slog.Warn("error checking available", "error message", err.Error())
 		return
 	}
 
@@ -640,19 +638,19 @@ func main() {
 
 	go func() {
 		for range ticker.C {
-			_, _, err = saku.runCheck()
+			_, _, err = sakau.runCheck()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Warn("currently rechecking")
 					continue
 				}
-				slog.Warn("error running check available", "error message", err.Error())
+				slog.Warn("error checking available", "error message", err.Error())
 			}
 		}
 	}()
 
-	http.HandleFunc("/", saku.handleTranslate(retargetLanguageName))
-	http.HandleFunc("/check-alive", saku.handleCheckAlive())
+	http.HandleFunc("/", sakau.handleTranslate(retargetLanguageName))
+	http.HandleFunc("/check-alive", sakau.handleCheckAlive())
 
 	slog.Info("server running on http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
