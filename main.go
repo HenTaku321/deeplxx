@@ -55,7 +55,7 @@ type deepLXResp struct {
 	Alternatives []string `json:"alternatives"`
 }
 
-type safeAliveKeysAndURLs struct {
+type safeAvailableKeysAndURLs struct {
 	keys, urls     []string
 	mu             sync.RWMutex
 	isCheckingBool bool
@@ -151,7 +151,7 @@ func (p *posts) deepLX(u string) (deepLXResp, error) {
 	return lxResp, nil
 }
 
-func (p *posts) checkAlive(isKey bool, keyOrURL string) (bool, error) {
+func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 	if isKey {
 		lResp, err := p.deepL(keyOrURL)
 		if err != nil {
@@ -248,7 +248,7 @@ func (p *posts) googleTranslate() (string, error) {
 	}
 }
 
-func (sakau *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
+func (sakau *safeAvailableKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
 	var slice *[]string
 	indexToRemove := -1
 
@@ -277,7 +277,7 @@ func (sakau *safeAliveKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) b
 	return true
 }
 
-func (sakau *safeAliveKeysAndURLs) isChecking() bool {
+func (sakau *safeAvailableKeysAndURLs) isChecking() bool {
 	sakau.mu.RLock()
 	defer sakau.mu.RUnlock()
 	if sakau.isCheckingBool {
@@ -286,13 +286,13 @@ func (sakau *safeAliveKeysAndURLs) isChecking() bool {
 	return false
 }
 
-func (sakau *safeAliveKeysAndURLs) setIsChecking(b bool) {
+func (sakau *safeAvailableKeysAndURLs) setIsChecking(b bool) {
 	sakau.mu.Lock()
 	defer sakau.mu.Unlock()
 	sakau.isCheckingBool = b
 }
 
-func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
+func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
 	if sakau.isChecking() {
 		return 0, 0, errIsChecking
 	}
@@ -313,7 +313,7 @@ func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 		Client: &http.Client{Timeout: 5 * time.Second},
 	}
 
-	var aliveKeys, aliveURLs []string
+	var availableKeys, availableURLs []string
 
 	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
@@ -327,15 +327,15 @@ func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
-			isAlive, err := p.checkAlive(true, k)
+			isAvailable, err := p.checkAvailable(true, k)
 			if err != nil {
 				slog.Warn("error checking available", "key", k, "error message", err.Error())
 				return
 			}
 
-			if isAlive {
+			if isAvailable {
 				mu.Lock()
-				aliveKeys = append(aliveKeys, k)
+				availableKeys = append(availableKeys, k)
 				mu.Unlock()
 			}
 		}(key)
@@ -345,15 +345,15 @@ func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			isAlive, err := p.checkAlive(false, u)
+			isAvailable, err := p.checkAvailable(false, u)
 			if err != nil {
 				slog.Warn("error checking available", "url", u, "error message", err.Error())
 				return
 			}
 
-			if isAlive {
+			if isAvailable {
 				mu.Lock()
-				aliveURLs = append(aliveURLs, u)
+				availableURLs = append(availableURLs, u)
 				mu.Unlock()
 			}
 		}(url)
@@ -362,7 +362,7 @@ func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 	wg.Wait()
 
 	sakau.mu.Lock()
-	sakau.keys, sakau.urls = aliveKeys, aliveURLs
+	sakau.keys, sakau.urls = availableKeys, availableURLs
 	sakau.mu.Unlock()
 
 	sakau.mu.RLock()
@@ -372,7 +372,7 @@ func (sakau *safeAliveKeysAndURLs) runCheck() (int, int, error) {
 	return len(keys), len(urls), nil
 }
 
-func (sakau *safeAliveKeysAndURLs) getRandomKey() string {
+func (sakau *safeAvailableKeysAndURLs) getRandomKey() string {
 	sakau.mu.RLock()
 	defer sakau.mu.RUnlock()
 	if len(sakau.keys) == 0 {
@@ -381,7 +381,7 @@ func (sakau *safeAliveKeysAndURLs) getRandomKey() string {
 	return sakau.keys[rand.IntN(len(sakau.keys))]
 }
 
-func (sakau *safeAliveKeysAndURLs) getRandomURL() string {
+func (sakau *safeAvailableKeysAndURLs) getRandomURL() string {
 	sakau.mu.RLock()
 	defer sakau.mu.RUnlock()
 	if len(sakau.urls) == 0 {
@@ -430,7 +430,7 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	return keys, urls, nil
 }
 
-func (sakau *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
+func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
@@ -453,7 +453,7 @@ func (sakau *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.
 		)
 
 		if err = json.NewDecoder(bytes.NewReader(reqBody)).Decode(&lxReq); err != nil || lxReq.Text == "" {
-			slog.Warn("invalid request body")
+			slog.Warn("invalid request body", "client", r.RemoteAddr)
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -585,7 +585,7 @@ func (sakau *safeAliveKeysAndURLs) handleTranslate(retargetLanguageName *regexp.
 	}
 }
 
-func (sakau *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
+func (sakau *safeAvailableKeysAndURLs) handleCheckAvailable() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug(r.RemoteAddr + " request of rechecking")
 
@@ -607,9 +607,25 @@ func (sakau *safeAliveKeysAndURLs) handleCheckAlive() http.HandlerFunc {
 		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
 			totalKeys, len(sakau.keys), totalURLs, len(sakau.urls))))
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			slog.Error("error writing response", "error message", err.Error())
 			return
 		}
+	}
+}
+
+func (sakau *safeAvailableKeysAndURLs) handleGetAvailableKeysAndURLsCount(w http.ResponseWriter, r *http.Request) {
+	slog.Debug(r.RemoteAddr + " request of get available keys and urls count")
+
+	sakau.mu.RLock()
+	defer sakau.mu.RUnlock()
+
+	_, err := w.Write([]byte(fmt.Sprintf("available keys count:%d, available urls count:%d\n",
+		len(sakau.keys), len(sakau.urls))))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("error writing response", "error message", err.Error())
+		return
 	}
 }
 
@@ -625,7 +641,7 @@ func main() {
 		retargetLanguageName = nil
 	}
 
-	sakau := &safeAliveKeysAndURLs{}
+	sakau := &safeAvailableKeysAndURLs{}
 
 	_, _, err := sakau.runCheck()
 	if err != nil {
@@ -649,8 +665,9 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/", sakau.handleTranslate(retargetLanguageName))
-	http.HandleFunc("/check-alive", sakau.handleCheckAlive())
+	http.HandleFunc("/translate", sakau.handleTranslate(retargetLanguageName))
+	http.HandleFunc("/check-available", sakau.handleCheckAvailable())
+	http.HandleFunc("/", sakau.handleGetAvailableKeysAndURLsCount)
 
 	slog.Info("server running on http://localhost:9000")
 	err = http.ListenAndServe(":9000", nil)
