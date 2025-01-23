@@ -326,7 +326,7 @@ func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
 	var mu = &sync.Mutex{}
 
 	for _, key := range keys {
-		if !checkedFreeKey && strings.HasSuffix(key, ":fx") {
+		if !checkedFreeKey && strings.HasSuffix(key, ":fx") { // the requests in goroutine can reuse this connection
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
 				slog.Warn("error checking available", "key", key, "error message", err.Error())
@@ -492,6 +492,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		lReq.Text = make([]string, 1)
 		lReq.TargetLang = lxReq.TargetLang
 		lReq.Text[0] = lxReq.Text
+		lReq.TagHandling = lxReq.TagHandling
 
 		p := posts{
 			deepLReq:  lReq,
