@@ -238,6 +238,8 @@ func (p *posts) googleTranslate() (string, error) {
 					break
 				}
 			}
+		} else if r == nil { // html only
+			return p.deepLXReq.Text, nil
 		} else {
 			return "", fmt.Errorf("unexpected response structure: %v", r)
 		}
@@ -313,17 +315,47 @@ func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
 		Client: &http.Client{Timeout: 5 * time.Second},
 	}
 
-	var availableKeys, availableURLs []string
-
 	keys, urls, err := parseKeysAndURLs()
 	if err != nil {
 		return 0, 0, err
 	}
 
+	var availableKeys, availableURLs []string
+	var checkedFreeKey, checkedProKey bool
 	var wg sync.WaitGroup
 	var mu = &sync.Mutex{}
 
 	for _, key := range keys {
+		if !checkedFreeKey && strings.HasSuffix(key, ":fx") {
+			isAvailable, err := p.checkAvailable(true, key)
+			if err != nil {
+				slog.Warn("error checking available", "key", key, "error message", err.Error())
+				return 0, 0, err
+			}
+
+			checkedFreeKey = true
+
+			if isAvailable {
+				availableKeys = append(availableKeys, key)
+			}
+
+			continue
+		} else if !checkedProKey && !strings.HasSuffix(key, ":fx") {
+			isAvailable, err := p.checkAvailable(true, key)
+			if err != nil {
+				slog.Warn("error checking available", "key", key, "error message", err.Error())
+				return 0, 0, err
+			}
+
+			checkedProKey = true
+
+			if isAvailable {
+				availableKeys = append(availableKeys, key)
+			}
+
+			continue
+		}
+
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
@@ -365,9 +397,7 @@ func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
 	sakau.keys, sakau.urls = availableKeys, availableURLs
 	sakau.mu.Unlock()
 
-	sakau.mu.RLock()
-	slog.Info("available check", "all keys count", len(keys), "available keys count", len(sakau.keys), "all urls count", len(urls), "available urls count", len(sakau.urls))
-	sakau.mu.RUnlock()
+	slog.Info("available check", "all keys count", len(keys), "available keys count", len(availableKeys), "all urls count", len(urls), "available urls count", len(availableURLs))
 
 	return len(keys), len(urls), nil
 }
@@ -483,7 +513,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			_, _, err = sakau.runCheck()
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
-					slog.Debug("currently rechecking")
+					//slog.Debug("currently rechecking") // too much output
 					http.Error(w, "no available keys or urls, currently rechecking, try again later", http.StatusInternalServerError)
 					return
 				}
@@ -516,11 +546,9 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 		var key, u string
 
-		sakau.mu.RLock()
-		if len(sakau.keys) == 0 && forceUseDeepL == true {
+		if sakau.getRandomKey() == "" && forceUseDeepL == true {
 			use = 2
 		}
-		sakau.mu.RUnlock()
 
 		if use == 0 {
 			key = sakau.getRandomKey()
@@ -549,7 +577,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			}
 		}
 
-		if retargetLanguageName != nil && use == 1 || use == 2 {
+		if retargetLanguageName != nil {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
 				if use == 1 && sakau.getRandomKey() != "" {
 					slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
@@ -561,7 +589,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 				<-googleTranslateDone
 				if googleTranslateErr != nil {
-					slog.Warn("google translate failed, the responseData did not change", "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
+					slog.Warn("google translate failed, the responseData did not change", "text", lxResp.Data, "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
 				} else if !retargetLanguageName.MatchString(googleTranslateText) {
 					slog.Debug("detected google is also missing translation, the responseData did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
 				} else {
