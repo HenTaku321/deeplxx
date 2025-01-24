@@ -28,9 +28,17 @@ var (
 )
 
 type deepLReq struct {
-	Text        []string `json:"text"`
-	TargetLang  string   `json:"target_lang"`
-	TagHandling string   `json:"tag_handling"`
+	Text               []string `json:"text"`
+	SourceLang         string   `json:"source_lang"`
+	TargetLang         string   `json:"target_lang"`
+	TagHandling        string   `json:"tag_handling"`
+	Context            string   `json:"context"`
+	ModelType          string   `json:"model_type"`
+	SplitSentences     string   `json:"split_sentences"`
+	PreserveFormatting bool     `json:"preserve_formatting"`
+	Formality          string   `json:"formality"`
+	GlossaryID         string   `json:"glossary_id"`
+	OutlineDetection   bool     `json:"outline_detection"`
 }
 
 type deepLResp struct {
@@ -42,10 +50,17 @@ type deepLResp struct {
 }
 
 type deepLXReq struct {
-	Text        string `json:"text"`
-	SourceLang  string `json:"source_lang"`
-	TargetLang  string `json:"target_lang"`
-	TagHandling string `json:"tag_handling"`
+	Text               string `json:"text"`
+	SourceLang         string `json:"source_lang"`
+	TargetLang         string `json:"target_lang"`
+	TagHandling        string `json:"tag_handling"`
+	Context            string `json:"context"`
+	ModelType          string `json:"model_type"`
+	SplitSentences     string `json:"split_sentences"`
+	PreserveFormatting bool   `json:"preserve_formatting"`
+	Formality          string `json:"formality"`
+	GlossaryID         string `json:"glossary_id"`
+	OutlineDetection   bool   `json:"outline_detection"`
 }
 
 type deepLXResp struct {
@@ -66,6 +81,14 @@ type posts struct {
 	lxReq    deepLXReq
 	lClient  *http.Client
 	lXClient *http.Client
+}
+
+func (d *deepLReq) checkDeepLSourceLangIsAllowed() bool {
+	sl := strings.ToLower(d.SourceLang)
+	if sl == "bg" || sl == "cs" || sl == "da" || sl == "de" || sl == "el" || sl == "en" || sl == "es" || sl == "et" || sl == "fi" || sl == "fr" || sl == "hu" || sl == "id" || sl == "it" || sl == "ja" || sl == "ko" || sl == "lt" || sl == "lv" || sl == "nb" || sl == "nl" || sl == "pl" || sl == "pt" || sl == "ro" || sl == "ru" || sl == "sk" || sl == "sl" || sl == "sv" || sl == "tr" || sl == "uk" || sl == "zh" {
+		return true
+	}
+	return false
 }
 
 func (p *posts) deepL(key string) (deepLResp, error) {
@@ -177,10 +200,6 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 				slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
 				return false, nil
 			}
-			//if errors.Is(err) {
-			//	slog.Debug("deeplx url is timeout", "url", keyOrURL, "error message", err.Error())
-			//	return false, nil
-			//}
 			return false, err
 		}
 	}
@@ -486,11 +505,21 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			return
 		}
 
-		lReq := deepLReq{}
-		lReq.Text = make([]string, 1)
-		lReq.TargetLang = lxReq.TargetLang
-		lReq.Text[0] = lxReq.Text
-		lReq.TagHandling = lxReq.TagHandling
+		lReq := deepLReq{
+			TargetLang:         lxReq.TargetLang,
+			TagHandling:        lxReq.TagHandling,
+			Context:            lxReq.Context,
+			Formality:          lxReq.Formality,
+			GlossaryID:         lxReq.GlossaryID,
+			OutlineDetection:   lxReq.OutlineDetection,
+			PreserveFormatting: lxReq.PreserveFormatting,
+			SplitSentences:     lxReq.SplitSentences,
+			Text:               []string{lxReq.Text},
+		}
+
+		if lReq.checkDeepLSourceLangIsAllowed() {
+			lReq.SourceLang = lxReq.SourceLang
+		}
 
 		p := posts{
 			lReq,
@@ -546,12 +575,16 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 		var key, u string
 
-		if sakau.getRandomKey() == "" && forceUseDeepL == true {
+		if sakau.getRandomKey() == "" && forceUseDeepL {
 			use = 2
 		}
 
 		if use == 0 {
 			key = sakau.getRandomKey()
+
+			if !strings.HasSuffix(key, ":fx") && lReq.checkDeepLSourceLangIsAllowed() {
+				p.lReq.ModelType = "prefer_quality_optimized"
+			}
 
 			lResp, err := p.deepL(key)
 			if err != nil {
