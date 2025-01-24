@@ -62,13 +62,14 @@ type safeAvailableKeysAndURLs struct {
 }
 
 type posts struct {
-	deepLReq
-	deepLXReq
-	*http.Client
+	lReq     deepLReq
+	lxReq    deepLXReq
+	lClient  *http.Client
+	lXClient *http.Client
 }
 
 func (p *posts) deepL(key string) (deepLResp, error) {
-	j, err := json.Marshal(p.deepLReq)
+	j, err := json.Marshal(p.lReq)
 	if err != nil {
 		return deepLResp{}, err
 	}
@@ -90,7 +91,7 @@ func (p *posts) deepL(key string) (deepLResp, error) {
 	req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.Client.Do(req)
+	resp, err := p.lClient.Do(req)
 	if err != nil {
 		return deepLResp{}, err
 	}
@@ -118,7 +119,7 @@ func (p *posts) deepL(key string) (deepLResp, error) {
 }
 
 func (p *posts) deepLX(u string) (deepLXResp, error) {
-	j, err := json.Marshal(p.deepLXReq)
+	j, err := json.Marshal(p.lxReq)
 	if err != nil {
 		return deepLXResp{}, err
 	}
@@ -128,7 +129,7 @@ func (p *posts) deepLX(u string) (deepLXResp, error) {
 		return deepLXResp{}, err
 	}
 
-	resp, err := p.Client.Do(req)
+	resp, err := p.lXClient.Do(req)
 	if err != nil {
 		return deepLXResp{}, err
 	}
@@ -142,10 +143,6 @@ func (p *posts) deepLX(u string) (deepLXResp, error) {
 
 	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
 		return deepLXResp{}, err
-	}
-
-	if lxResp.Code != http.StatusOK {
-		return deepLXResp{}, errors.Join(errDeepLXStatusNotOK, errors.New(resp.Status))
 	}
 
 	return lxResp, nil
@@ -197,18 +194,18 @@ func (p *posts) googleTranslate() (string, error) {
 	var sb strings.Builder
 
 	sb.WriteString("https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=")
-	sb.WriteString(p.deepLXReq.SourceLang)
+	sb.WriteString(p.lxReq.SourceLang)
 	sb.WriteString("&tl=")
-	sb.WriteString(p.deepLXReq.TargetLang)
+	sb.WriteString(p.lxReq.TargetLang)
 	sb.WriteString("&dt=t")
-	if p.deepLXReq.TagHandling != "" {
+	if p.lxReq.TagHandling != "" {
 		sb.WriteString("&format=")
-		sb.WriteString(p.deepLXReq.TagHandling)
+		sb.WriteString(p.lxReq.TagHandling)
 	}
 	sb.WriteString("&q=")
-	sb.WriteString(url.QueryEscape(p.deepLXReq.Text))
+	sb.WriteString(url.QueryEscape(p.lxReq.Text))
 
-	resp, err := p.Client.Get(sb.String())
+	resp, err := p.lClient.Get(sb.String())
 	if err != nil {
 		return "", err
 	}
@@ -239,7 +236,7 @@ func (p *posts) googleTranslate() (string, error) {
 				}
 			}
 		} else if r == nil { // html only
-			return p.deepLXReq.Text, nil
+			return p.lxReq.Text, nil
 		} else {
 			return "", fmt.Errorf("unexpected response structure: %v", r)
 		}
@@ -303,16 +300,17 @@ func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
 	defer func() { sakau.setIsChecking(false) }()
 
 	p := posts{
-		deepLReq: deepLReq{
+		deepLReq{
 			Text:       []string{"Hi"},
 			TargetLang: "zh",
 		},
-		deepLXReq: deepLXReq{
+		deepLXReq{
 			Text:       "Hi",
 			SourceLang: "en",
 			TargetLang: "zh",
 		},
-		Client: &http.Client{Timeout: 5 * time.Second},
+		&http.Client{},
+		&http.Client{Timeout: 5 * time.Second},
 	}
 
 	keys, urls, err := parseKeysAndURLs()
@@ -495,9 +493,10 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		lReq.TagHandling = lxReq.TagHandling
 
 		p := posts{
-			deepLReq:  lReq,
-			deepLXReq: lxReq,
-			Client:    &http.Client{Timeout: 5 * time.Second},
+			lReq,
+			lxReq,
+			&http.Client{},
+			&http.Client{Timeout: 5 * time.Second},
 		}
 
 		go func() {
@@ -590,9 +589,9 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 				<-googleTranslateDone
 				if googleTranslateErr != nil {
-					slog.Warn("google translate failed, the responseData did not change", "text", lxResp.Data, "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
+					slog.Warn("google translate failed, the response did not change", "text", lxResp.Data, "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
 				} else if !retargetLanguageName.MatchString(googleTranslateText) {
-					slog.Debug("detected google is also missing translation, the responseData did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
+					slog.Debug("detected google is also missing translation, the response did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
 				} else {
 					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
