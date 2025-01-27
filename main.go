@@ -619,9 +619,9 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 				}
 
 				if forceUseDeepL {
-					slog.Debug("detected deepl is also missing translation, or has no available key, retranslate with google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
+					slog.Debug("detected deepl is also missing translation, or has no available key, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
 				} else {
-					slog.Debug("detected deepl is missing translation, retranslate with google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
+					slog.Debug("detected deepl is missing translation, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
 				}
 
 				<-googleTranslateDone
