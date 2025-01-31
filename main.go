@@ -14,16 +14,15 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	errDeepLStatusNotOK                  = errors.New("")
 	errDeepLQuotaExceeded                = errors.New("quota exceeded")
 	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
-	errDeepLXStatusNotOK                 = errors.New("")
 	errIsChecking                        = errors.New("currently checking")
 )
 
@@ -91,10 +90,10 @@ func (d *deepLReq) checkDeepLSourceLangIsAllowed() bool {
 	return false
 }
 
-func (p *posts) deepL(key string) (deepLResp, error) {
+func (p *posts) deepL(key string) (deepLResp, int, error) {
 	j, err := json.Marshal(p.lReq)
 	if err != nil {
-		return deepLResp{}, err
+		return deepLResp{}, 0, err
 	}
 
 	var req *http.Request
@@ -102,12 +101,12 @@ func (p *posts) deepL(key string) (deepLResp, error) {
 	if strings.HasSuffix(key, ":fx") {
 		req, err = http.NewRequest("POST", "https://api-free.deepl.com/v2/translate", bytes.NewReader(j))
 		if err != nil {
-			return deepLResp{}, err
+			return deepLResp{}, 0, err
 		}
 	} else {
 		req, err = http.NewRequest("POST", "https://api.deepl.com/v2/translate", bytes.NewReader(j))
 		if err != nil {
-			return deepLResp{}, err
+			return deepLResp{}, 0, err
 		}
 	}
 
@@ -116,71 +115,76 @@ func (p *posts) deepL(key string) (deepLResp, error) {
 
 	resp, err := p.lClient.Do(req)
 	if err != nil {
-		return deepLResp{}, err
+		return deepLResp{}, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return deepLResp{}, errors.Join(errDeepLStatusNotOK, errors.New(resp.Status))
+		return deepLResp{}, resp.StatusCode, nil
 	}
 
 	lResp := deepLResp{}
 
 	if err = json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
-		return deepLResp{}, err
+		return deepLResp{}, resp.StatusCode, err
 	}
 
 	if len(lResp.Translations) == 0 {
 		if lResp.Message == "Quota Exceeded" {
-			return deepLResp{}, errDeepLQuotaExceeded
+			return deepLResp{}, resp.StatusCode, errDeepLQuotaExceeded
 		} else {
-			return deepLResp{}, errDeepLUnavailableForUnknownReasons
+			return deepLResp{}, resp.StatusCode, errDeepLUnavailableForUnknownReasons
 		}
 	}
 
-	return lResp, nil
+	return lResp, resp.StatusCode, nil
 }
 
-func (p *posts) deepLX(u string) (deepLXResp, error) {
+func (p *posts) deepLX(u string) (deepLXResp, int, error) {
 	j, err := json.Marshal(p.lxReq)
 	if err != nil {
-		return deepLXResp{}, err
+		return deepLXResp{}, 0, err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(j))
 	if err != nil {
-		return deepLXResp{}, err
+		return deepLXResp{}, 0, err
 	}
 
 	resp, err := p.lXClient.Do(req)
 	if err != nil {
-		return deepLXResp{}, err
+		return deepLXResp{}, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return deepLXResp{}, errors.Join(errDeepLXStatusNotOK, errors.New(resp.Status))
+		return deepLXResp{}, resp.StatusCode, nil
 	}
 
 	lxResp := deepLXResp{}
 
 	if err = json.NewDecoder(resp.Body).Decode(&lxResp); err != nil {
-		return deepLXResp{}, err
+		return deepLXResp{}, resp.StatusCode, err
 	}
 
-	return lxResp, nil
+	return lxResp, resp.StatusCode, nil
 }
 
 func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 	if isKey {
-		lResp, err := p.deepL(keyOrURL)
+		lResp, lRespCode, err := p.deepL(keyOrURL)
+
+		if lRespCode != http.StatusOK {
+			if lRespCode >= http.StatusInternalServerError {
+				return p.checkAvailable(isKey, keyOrURL)
+			} else {
+				return false, errors.New("HTTP " + strconv.Itoa(lRespCode))
+			}
+		}
+
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err.Error())
-				return false, nil
-			}
-			if errors.Is(err, errDeepLStatusNotOK) {
-				slog.Debug("deepl key status not ok", "key", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
 				return false, nil
 			}
 			if errors.Is(err, errDeepLQuotaExceeded) {
@@ -194,12 +198,17 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 			return false, err
 		}
 	} else {
-		_, err := p.deepLX(keyOrURL)
-		if err != nil {
-			if errors.Is(err, errDeepLXStatusNotOK) {
-				slog.Debug("deeplx url is unavailable", "url", keyOrURL, "error message", strings.TrimPrefix(err.Error(), "\n"))
-				return false, nil
+		_, lxRespCode, err := p.deepLX(keyOrURL)
+
+		if lxRespCode != http.StatusOK {
+			if lxRespCode >= http.StatusInternalServerError {
+				return p.checkAvailable(isKey, keyOrURL)
+			} else {
+				return false, errors.New("HTTP " + strconv.Itoa(lxRespCode))
 			}
+		}
+
+		if err != nil {
 			return false, err
 		}
 	}
@@ -586,10 +595,16 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 				p.lReq.ModelType = "prefer_quality_optimized"
 			}
 
-			lResp, err := p.deepL(key)
+			lResp, lRespCode, err := p.deepL(key)
+
+			if lRespCode != http.StatusOK && lRespCode >= http.StatusInternalServerError {
+				slog.Warn("deepl server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+				goto reTranslate
+			}
+
 			if err != nil {
 				if sakau.removeKeyOrURL(true, key) {
-					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime).String())
+					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
@@ -601,10 +616,17 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		} else if use == 1 {
 			u = sakau.getRandomURL()
 
-			lxResp, err = p.deepLX(u)
+			var lxRespCode int
+			lxResp, lxRespCode, err = p.deepLX(u)
+
+			if lxRespCode != http.StatusOK && lxRespCode >= http.StatusInternalServerError {
+				slog.Warn("deeplx server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+				goto reTranslate
+			}
+
 			if err != nil {
 				if sakau.removeKeyOrURL(false, u) {
-					slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", strings.TrimPrefix(err.Error(), "\n"), "text", lxReq.Text, "latency", time.Since(startTime).String())
+					slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
@@ -613,22 +635,23 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		if retargetLanguageName != nil {
 			if !retargetLanguageName.MatchString(lxResp.Data) {
 				if use == 1 && sakau.getRandomKey() != "" {
-					slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
+					//slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
 					forceUseDeepL = true
 					goto reTranslate
 				}
 
-				if forceUseDeepL {
-					slog.Debug("detected deepl is also missing translation, or has no available key, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
-				} else {
-					slog.Debug("detected deepl is missing translation, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
-				}
+				//if forceUseDeepL {
+				//	slog.Debug("detected deepl is also missing translation, or has no available key, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
+				//} else {
+				//	slog.Debug("detected deepl is missing translation, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
+				//}
 
 				<-googleTranslateDone
 				if googleTranslateErr != nil {
 					slog.Warn("google translate failed, the response did not change", "text", lxResp.Data, "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
 				} else if !retargetLanguageName.MatchString(googleTranslateText) {
-					slog.Debug("detected google is also missing translation, the response did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
+					//slog.Debug("detected google is also missing translation, the response did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
+					usedGoogleTranslate = true
 				} else {
 					lxResp.Data = googleTranslateText
 					usedGoogleTranslate = true
