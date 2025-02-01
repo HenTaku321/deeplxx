@@ -597,12 +597,12 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 			lResp, lRespCode, err := p.deepL(key)
 
-			if lRespCode != http.StatusOK && lRespCode >= http.StatusInternalServerError {
-				slog.Warn("deepl server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+			if lRespCode >= http.StatusInternalServerError {
+				slog.Debug("deepl server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				goto reTranslate
 			}
 
-			if err != nil {
+			if err != nil || lRespCode != http.StatusOK {
 				if sakau.removeKeyOrURL(true, key) {
 					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
@@ -620,7 +620,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			lxResp, lxRespCode, err = p.deepLX(u)
 
 			if lxRespCode != http.StatusOK && lxRespCode >= http.StatusInternalServerError {
-				slog.Warn("deeplx server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+				slog.Debug("deeplx server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				goto reTranslate
 			}
 
