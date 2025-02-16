@@ -115,6 +115,8 @@ func (p *posts) deepL(key string) (deepLResp, int, error) {
 
 	resp, err := p.lClient.Do(req)
 	if err != nil {
+		p.lClient.CloseIdleConnections()
+		slog.Debug("cleared http connection pool of deepl")
 		return deepLResp{}, 0, err
 	}
 	defer resp.Body.Close()
@@ -153,6 +155,8 @@ func (p *posts) deepLX(u string) (deepLXResp, int, error) {
 
 	resp, err := p.lXClient.Do(req)
 	if err != nil {
+		p.lXClient.CloseIdleConnections()
+		slog.Debug("cleared http connection pool of deeplx")
 		return deepLXResp{}, 0, err
 	}
 	defer resp.Body.Close()
@@ -174,14 +178,6 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 	if isKey {
 		lResp, lRespCode, err := p.deepL(keyOrURL)
 
-		if lRespCode != http.StatusOK {
-			if lRespCode >= http.StatusInternalServerError {
-				return p.checkAvailable(isKey, keyOrURL)
-			} else {
-				return false, errors.New("HTTP " + strconv.Itoa(lRespCode))
-			}
-		}
-
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				slog.Debug("deepl key is invalid", "key", keyOrURL, "error message", err.Error())
@@ -197,8 +193,21 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 			}
 			return false, err
 		}
+
+		if lRespCode != http.StatusOK {
+			if lRespCode >= http.StatusInternalServerError {
+				return p.checkAvailable(isKey, keyOrURL)
+			} else {
+				fmt.Println(err)
+				return false, errors.New("HTTP " + strconv.Itoa(lRespCode))
+			}
+		}
 	} else {
 		_, lxRespCode, err := p.deepLX(keyOrURL)
+
+		if err != nil {
+			return false, err
+		}
 
 		if lxRespCode != http.StatusOK {
 			if lxRespCode >= http.StatusInternalServerError {
@@ -206,10 +215,6 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 			} else {
 				return false, errors.New("HTTP " + strconv.Itoa(lxRespCode))
 			}
-		}
-
-		if err != nil {
-			return false, err
 		}
 	}
 
@@ -319,9 +324,13 @@ func (sakau *safeAvailableKeysAndURLs) setIsChecking(b bool) {
 	sakau.isCheckingBool = b
 }
 
-func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
+func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, error) {
 	if sakau.isChecking() {
 		return 0, 0, errIsChecking
+	}
+
+	if needOutput {
+		slog.Debug("no available keys and urls, start rechecking")
 	}
 
 	sakau.setIsChecking(true)
@@ -337,7 +346,7 @@ func (sakau *safeAvailableKeysAndURLs) runCheck() (int, int, error) {
 			SourceLang: "en",
 			TargetLang: "zh",
 		},
-		&http.Client{},
+		&http.Client{Timeout: 3 * time.Second},
 		&http.Client{Timeout: 5 * time.Second},
 	}
 
@@ -533,7 +542,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		p := posts{
 			lReq,
 			lxReq,
-			&http.Client{},
+			&http.Client{Timeout: 3 * time.Second},
 			&http.Client{Timeout: 5 * time.Second},
 		}
 
@@ -546,9 +555,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 		if sakau.getRandomKey() == "" && sakau.getRandomURL() == "" {
 
-			slog.Debug("no available keys and urls, start rechecking")
-
-			_, _, err = sakau.runCheck()
+			_, _, err = sakau.runCheck(true)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					//slog.Debug("currently rechecking") // too much output
@@ -632,30 +639,28 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			}
 		}
 
-		if retargetLanguageName != nil {
-			if !retargetLanguageName.MatchString(lxResp.Data) {
-				if use == 1 && sakau.getRandomKey() != "" {
-					//slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
-					forceUseDeepL = true
-					goto reTranslate
-				}
+		if retargetLanguageName != nil && !retargetLanguageName.MatchString(lxResp.Data) {
+			if use == 1 && sakau.getRandomKey() != "" {
+				//slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
+				forceUseDeepL = true
+				goto reTranslate
+			}
 
-				//if forceUseDeepL {
-				//	slog.Debug("detected deepl is also missing translation, or has no available key, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
-				//} else {
-				//	slog.Debug("detected deepl is missing translation, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
-				//}
+			//if forceUseDeepL {
+			//	slog.Debug("detected deepl is also missing translation, or has no available key, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
+			//} else {
+			//	slog.Debug("detected deepl is missing translation, using google translate", "text", lxResp.Data, "key", key, "latency", time.Since(startTime).String())
+			//}
 
-				<-googleTranslateDone
-				if googleTranslateErr != nil {
-					slog.Warn("google translate failed, the response did not change", "text", lxResp.Data, "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
-				} else if !retargetLanguageName.MatchString(googleTranslateText) {
-					//slog.Debug("detected google is also missing translation, the response did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
-					usedGoogleTranslate = true
-				} else {
-					lxResp.Data = googleTranslateText
-					usedGoogleTranslate = true
-				}
+			<-googleTranslateDone
+			if googleTranslateErr != nil {
+				slog.Warn("google translate failed, the response did not change", "text", lxResp.Data, "error message", googleTranslateErr.Error(), "latency", time.Since(startTime).String())
+			} else if !retargetLanguageName.MatchString(googleTranslateText) {
+				//slog.Debug("detected google is also missing translation, the response did not change", "text", googleTranslateText, "latency", time.Since(startTime).String())
+				usedGoogleTranslate = true
+			} else {
+				lxResp.Data = googleTranslateText
+				usedGoogleTranslate = true
 			}
 		}
 
@@ -673,37 +678,35 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 	}
 }
 
-func (sakau *safeAvailableKeysAndURLs) handleCheckAvailable() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Debug(r.RemoteAddr + " request of rechecking")
+func (sakau *safeAvailableKeysAndURLs) handleCheckAvailable(w http.ResponseWriter, r *http.Request) {
+	slog.Debug(r.RemoteAddr + " request for rechecking")
 
-		totalKeys, totalURLs, err := sakau.runCheck()
-		if err != nil {
-			if errors.Is(err, errIsChecking) {
-				slog.Warn("currently rechecking")
-				http.Error(w, "currently rechecking, try again later", http.StatusServiceUnavailable)
-				return
-			}
-
-			slog.Warn("error checking available", "error message", err.Error())
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	totalKeys, totalURLs, err := sakau.runCheck(false)
+	if err != nil {
+		if errors.Is(err, errIsChecking) {
+			slog.Warn("currently rechecking")
+			http.Error(w, "currently rechecking, try again later", http.StatusServiceUnavailable)
 			return
 		}
 
-		sakau.mu.RLock()
-		defer sakau.mu.RUnlock()
-		_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
-			totalKeys, len(sakau.keys), totalURLs, len(sakau.urls))))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			slog.Error("error writing response", "error message", err.Error())
-			return
-		}
+		slog.Warn("error checking available", "error message", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sakau.mu.RLock()
+	defer sakau.mu.RUnlock()
+	_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
+		totalKeys, len(sakau.keys), totalURLs, len(sakau.urls))))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("error writing response", "error message", err.Error())
+		return
 	}
 }
 
 func (sakau *safeAvailableKeysAndURLs) handleGetAvailableKeysAndURLsCount(w http.ResponseWriter, r *http.Request) {
-	slog.Debug(r.RemoteAddr + " request of get available keys and urls count")
+	slog.Debug(r.RemoteAddr + " request for get available keys and urls count")
 
 	sakau.mu.RLock()
 	defer sakau.mu.RUnlock()
@@ -731,7 +734,7 @@ func main() {
 
 	sakau := &safeAvailableKeysAndURLs{}
 
-	_, _, err := sakau.runCheck()
+	_, _, err := sakau.runCheck(false)
 	if err != nil {
 		slog.Warn("error checking available", "error message", err.Error())
 		return
@@ -742,7 +745,7 @@ func main() {
 
 	go func() {
 		for range ticker.C {
-			_, _, err = sakau.runCheck()
+			_, _, err = sakau.runCheck(false)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Warn("currently rechecking")
@@ -754,7 +757,7 @@ func main() {
 	}()
 
 	http.HandleFunc("/translate", sakau.handleTranslate(retargetLanguageName))
-	http.HandleFunc("/check-available", sakau.handleCheckAvailable())
+	http.HandleFunc("/check-available", sakau.handleCheckAvailable)
 	http.HandleFunc("/", sakau.handleGetAvailableKeysAndURLsCount)
 
 	slog.Info("server running on http://localhost:9000")
