@@ -197,8 +197,10 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 		if lRespCode != http.StatusOK {
 			if lRespCode >= http.StatusInternalServerError {
 				return p.checkAvailable(isKey, keyOrURL)
+			} else if lRespCode == http.StatusForbidden {
+				slog.Debug("deepl key is invalid", "key", keyOrURL)
+				return false, nil
 			} else {
-				fmt.Println(err)
 				return false, errors.New("HTTP " + strconv.Itoa(lRespCode))
 			}
 		}
@@ -346,7 +348,7 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 			SourceLang: "en",
 			TargetLang: "zh",
 		},
-		&http.Client{Timeout: 3 * time.Second},
+		&http.Client{Timeout: 5 * time.Second},
 		&http.Client{Timeout: 5 * time.Second},
 	}
 
@@ -542,7 +544,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		p := posts{
 			lReq,
 			lxReq,
-			&http.Client{Timeout: 3 * time.Second},
+			&http.Client{Timeout: 5 * time.Second},
 			&http.Client{Timeout: 5 * time.Second},
 		}
 
@@ -563,7 +565,6 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 					return
 				}
 
-				slog.Warn("error checking available", "error message", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -689,7 +690,6 @@ func (sakau *safeAvailableKeysAndURLs) handleCheckAvailable(w http.ResponseWrite
 			return
 		}
 
-		slog.Warn("error checking available", "error message", err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -736,7 +736,6 @@ func main() {
 
 	_, _, err := sakau.runCheck(false)
 	if err != nil {
-		slog.Warn("error checking available", "error message", err.Error())
 		return
 	}
 
@@ -751,7 +750,6 @@ func main() {
 					slog.Warn("currently rechecking")
 					continue
 				}
-				slog.Warn("error checking available", "error message", err.Error())
 			}
 		}
 	}()
