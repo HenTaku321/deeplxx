@@ -373,7 +373,9 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 			checkedFreeKey = true
 
 			if isAvailable {
+				mu.Lock()
 				availableKeys = append(availableKeys, key)
+				mu.Unlock()
 			}
 
 			continue
@@ -387,7 +389,9 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 			checkedProKey = true
 
 			if isAvailable {
+				mu.Lock()
 				availableKeys = append(availableKeys, key)
+				mu.Unlock()
 			}
 
 			continue
