@@ -23,7 +23,7 @@ import (
 var (
 	errDeepLQuotaExceeded                = errors.New("quota exceeded")
 	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
-	errDeepLXEmptyResult                 = errors.New("empty result")
+	errDeepLXResponseEmptyText           = errors.New("empty result")
 	errIsChecking                        = errors.New("currently checking")
 )
 
@@ -173,7 +173,7 @@ func (p *posts) deepLX(u string) (deepLXResp, int, error) {
 	}
 
 	if lxResp.Data == "" {
-		return deepLXResp{}, resp.StatusCode, errDeepLXEmptyResult
+		return deepLXResp{}, resp.StatusCode, errDeepLXResponseEmptyText
 	}
 
 	return lxResp, resp.StatusCode, nil
@@ -206,7 +206,8 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 				slog.Debug("deepl key is invalid", "key", keyOrURL)
 				return false, nil
 			} else {
-				return false, errors.New("HTTP " + strconv.Itoa(lRespCode))
+				slog.Debug("deepl key is unavailable", "key", keyOrURL, "error message", "HTTP "+strconv.Itoa(lRespCode))
+				return false, nil
 			}
 		}
 	} else {
@@ -217,7 +218,8 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 		}
 
 		if lxRespCode != http.StatusOK {
-			return false, errors.New("HTTP " + strconv.Itoa(lxRespCode))
+			slog.Debug("deeplx is unavailable", "key", keyOrURL, "error message", "HTTP "+strconv.Itoa(lxRespCode))
+			return false, nil
 		}
 	}
 
@@ -421,6 +423,11 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 			defer wg.Done()
 			isAvailable, err := p.checkAvailable(false, u)
 			if err != nil {
+				if errors.Is(err, errDeepLXResponseEmptyText) {
+					slog.Debug("deeplx server response text is empty", "url", u)
+					return
+				}
+
 				slog.Warn("error checking available", "url", u, "error message", err.Error())
 				return
 			}
@@ -611,7 +618,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			lResp, lRespCode, err := p.deepL(key)
 
 			if lRespCode >= http.StatusInternalServerError {
-				slog.Debug("deepl server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+				slog.Debug("deepl server response code is not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				goto reTranslate
 			}
 
@@ -640,7 +647,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			lxResp, lxRespCode, err = p.deepLX(u)
 
 			if lxRespCode != http.StatusOK && lxRespCode >= http.StatusInternalServerError {
-				slog.Debug("deeplx server response code not ok, retranslate", "url", u, "error message", "HTTP "+strconv.Itoa(lxRespCode), "text", lxReq.Text, "latency", time.Since(startTime).String())
+				slog.Debug("deeplx server response code is not ok, retranslate", "url", u, "error message", "HTTP "+strconv.Itoa(lxRespCode), "text", lxReq.Text, "latency", time.Since(startTime).String())
 				goto reTranslate
 			}
 
