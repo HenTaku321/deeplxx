@@ -23,6 +23,7 @@ import (
 var (
 	errDeepLQuotaExceeded                = errors.New("quota exceeded")
 	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
+	errDeepLXEmptyResult                 = errors.New("empty result")
 	errIsChecking                        = errors.New("currently checking")
 )
 
@@ -171,6 +172,10 @@ func (p *posts) deepLX(u string) (deepLXResp, int, error) {
 		return deepLXResp{}, resp.StatusCode, err
 	}
 
+	if lxResp.Data == "" {
+		return deepLXResp{}, resp.StatusCode, errDeepLXEmptyResult
+	}
+
 	return lxResp, resp.StatusCode, nil
 }
 
@@ -212,11 +217,7 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 		}
 
 		if lxRespCode != http.StatusOK {
-			if lxRespCode >= http.StatusInternalServerError {
-				return p.checkAvailable(isKey, keyOrURL)
-			} else {
-				return false, errors.New("HTTP " + strconv.Itoa(lxRespCode))
-			}
+			return false, errors.New("HTTP " + strconv.Itoa(lxRespCode))
 		}
 	}
 
@@ -614,9 +615,16 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 				goto reTranslate
 			}
 
-			if err != nil || lRespCode != http.StatusOK {
+			if err != nil {
 				if sakau.removeKeyOrURL(true, key) {
 					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+				}
+				goto reTranslate
+			}
+
+			if lRespCode != http.StatusOK {
+				if sakau.removeKeyOrURL(true, key) {
+					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", "HTTP "+strconv.Itoa(lRespCode), "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
@@ -632,7 +640,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			lxResp, lxRespCode, err = p.deepLX(u)
 
 			if lxRespCode != http.StatusOK && lxRespCode >= http.StatusInternalServerError {
-				slog.Debug("deeplx server response code not ok, retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
+				slog.Debug("deeplx server response code not ok, retranslate", "url", u, "error message", "HTTP "+strconv.Itoa(lxRespCode), "text", lxReq.Text, "latency", time.Since(startTime).String())
 				goto reTranslate
 			}
 
