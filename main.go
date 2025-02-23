@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,6 +27,9 @@ var (
 	errDeepLXResponseEmptyText           = errors.New("empty result")
 	errIsChecking                        = errors.New("currently checking")
 )
+
+var deepLClient *http.Client
+var deepLXClient *http.Client
 
 type deepLReq struct {
 	Text               []string `json:"text"`
@@ -116,8 +120,6 @@ func (p *posts) deepL(key string) (deepLResp, int, error) {
 
 	resp, err := p.lClient.Do(req)
 	if err != nil {
-		p.lClient.CloseIdleConnections()
-		slog.Debug("cleared http connection pool of deepl")
 		return deepLResp{}, 0, err
 	}
 	defer resp.Body.Close()
@@ -156,8 +158,6 @@ func (p *posts) deepLX(u string) (deepLXResp, int, error) {
 
 	resp, err := p.lXClient.Do(req)
 	if err != nil {
-		p.lXClient.CloseIdleConnections()
-		slog.Debug("cleared http connection pool of deeplx")
 		return deepLXResp{}, 0, err
 	}
 	defer resp.Body.Close()
@@ -351,8 +351,8 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 			SourceLang: "en",
 			TargetLang: "zh",
 		},
-		&http.Client{Timeout: 5 * time.Second},
-		&http.Client{Timeout: 5 * time.Second},
+		deepLClient,
+		deepLXClient,
 	}
 
 	keys, urls, err := parseKeysAndURLs()
@@ -367,8 +367,14 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 
 	for _, key := range keys {
 		if !checkedFreeKey && strings.HasSuffix(key, ":fx") { // the requests in goroutine can reuse this connection
+		deepLFreeReCheck:
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Debug("deepl connection timeout, recheck")
+					goto deepLFreeReCheck
+				}
+
 				slog.Warn("error checking available", "key", key, "error message", err.Error())
 				return 0, 0, err
 			}
@@ -383,8 +389,14 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 
 			continue
 		} else if !checkedProKey && !strings.HasSuffix(key, ":fx") {
+		deepLProReCheck:
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Debug("deepl connection timeout, recheck")
+					goto deepLProReCheck
+				}
+
 				slog.Warn("error checking available", "key", key, "error message", err.Error())
 				return 0, 0, err
 			}
@@ -403,8 +415,14 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
+		deepLReCheck:
 			isAvailable, err := p.checkAvailable(true, k)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Debug("deepl connection timeout, recheck")
+					goto deepLReCheck
+				}
+
 				slog.Warn("error checking available", "key", k, "error message", err.Error())
 				return
 			}
@@ -421,8 +439,14 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
+		deepLXReCheck:
 			isAvailable, err := p.checkAvailable(false, u)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Debug("deeplx connection timeout, recheck", "url", u)
+					goto deepLXReCheck
+				}
+
 				if errors.Is(err, errDeepLXResponseEmptyText) {
 					slog.Debug("deeplx server response text is empty", "url", u)
 					return
@@ -556,8 +580,8 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		p := posts{
 			lReq,
 			lxReq,
-			&http.Client{Timeout: 5 * time.Second},
-			&http.Client{Timeout: 5 * time.Second},
+			deepLClient,
+			deepLXClient,
 		}
 
 		go func() {
@@ -623,6 +647,12 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			}
 
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					p.lClient.CloseIdleConnections()
+					slog.Debug("deepl connection timeout, cleared http connection pool of deepl and retranslate")
+					goto reTranslate
+				}
+
 				if sakau.removeKeyOrURL(true, key) {
 					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
@@ -652,6 +682,12 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			}
 
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					p.lXClient.CloseIdleConnections()
+					slog.Debug("deeplx connection timeout, cleared http connection pool of deeplx and retranslate", "url", u)
+					goto reTranslate
+				}
+
 				if sakau.removeKeyOrURL(false, u) {
 					slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
@@ -742,6 +778,9 @@ func (sakau *safeAvailableKeysAndURLs) handleGetAvailableKeysAndURLsCount(w http
 var retargetLanguageName *regexp.Regexp
 
 func main() {
+	deepLClient = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{}}
+	deepLXClient = &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{}}
+
 	enableJSONOutput, enableDebug, targetLanguageName := parseArgs()
 	slog.SetDefault(newLogger(enableJSONOutput, enableDebug))
 
@@ -776,9 +815,9 @@ func main() {
 	http.HandleFunc("/translate", sakau.handleTranslate(retargetLanguageName))
 	http.HandleFunc("/check-available", sakau.handleCheckAvailable)
 	http.HandleFunc("/", sakau.handleGetAvailableKeysAndURLsCount)
+	err = http.ListenAndServe(":9000", nil)
 
 	slog.Info("server running on http://localhost:9000")
-	err = http.ListenAndServe(":9000", nil)
 	if err != nil {
 		slog.Error(err.Error())
 		return
