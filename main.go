@@ -28,9 +28,6 @@ var (
 	errIsChecking                        = errors.New("currently checking")
 )
 
-var deepLClient *http.Client
-var deepLXClient *http.Client
-
 type deepLReq struct {
 	Text               []string `json:"text"`
 	SourceLang         string   `json:"source_lang"`
@@ -85,6 +82,11 @@ type posts struct {
 	lxReq    deepLXReq
 	lClient  *http.Client
 	lXClient *http.Client
+}
+
+type safeAvailableKeysAndURLsAndPosts struct {
+	*safeAvailableKeysAndURLs
+	*posts
 }
 
 func (d *deepLReq) checkDeepLSourceLangIsAllowed() bool {
@@ -329,8 +331,8 @@ func (sakau *safeAvailableKeysAndURLs) setIsChecking(b bool) {
 	sakau.isCheckingBool = b
 }
 
-func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, error) {
-	if sakau.isChecking() {
+func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int, error) {
+	if sap.isChecking() {
 		return 0, 0, errIsChecking
 	}
 
@@ -338,8 +340,8 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 		slog.Debug("no available keys and urls, start rechecking")
 	}
 
-	sakau.setIsChecking(true)
-	defer func() { sakau.setIsChecking(false) }()
+	sap.setIsChecking(true)
+	defer func() { sap.setIsChecking(false) }()
 
 	p := posts{
 		deepLReq{
@@ -351,8 +353,8 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 			SourceLang: "en",
 			TargetLang: "zh",
 		},
-		deepLClient,
-		deepLXClient,
+		sap.lClient,
+		sap.lXClient,
 	}
 
 	keys, urls, err := parseKeysAndURLs()
@@ -466,9 +468,9 @@ func (sakau *safeAvailableKeysAndURLs) runCheck(needOutput bool) (int, int, erro
 
 	wg.Wait()
 
-	sakau.mu.Lock()
-	sakau.keys, sakau.urls = availableKeys, availableURLs
-	sakau.mu.Unlock()
+	sap.mu.Lock()
+	sap.keys, sap.urls = availableKeys, availableURLs
+	sap.mu.Unlock()
 
 	slog.Info("available check", "all keys count", len(keys), "available keys count", len(availableKeys), "all urls count", len(urls), "available urls count", len(availableURLs))
 
@@ -533,7 +535,7 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	return keys, urls, nil
 }
 
-func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
+func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
@@ -580,8 +582,8 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		p := posts{
 			lReq,
 			lxReq,
-			deepLClient,
-			deepLXClient,
+			sap.lClient,
+			sap.lXClient,
 		}
 
 		go func() {
@@ -591,9 +593,9 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 
 	reTranslate:
 
-		if sakau.getRandomKey() == "" && sakau.getRandomURL() == "" {
+		if sap.getRandomKey() == "" && sap.getRandomURL() == "" {
 
-			_, _, err = sakau.runCheck(true)
+			_, _, err = sap.runCheck(true)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					//slog.Debug("currently rechecking") // too much output
@@ -605,7 +607,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 				return
 			}
 
-			if sakau.getRandomKey() == "" && sakau.getRandomURL() == "" {
+			if sap.getRandomKey() == "" && sap.getRandomURL() == "" {
 				slog.Error("no available keys and urls")
 				http.Error(w, "no available keys and urls", http.StatusInternalServerError)
 				return
@@ -615,25 +617,25 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 		var use int // 0 = key, 1 = url, 2 = accidentally no key when force use deepL translations
 
 		if !forceUseDeepL {
-			sakau.mu.RLock()
-			if len(sakau.keys) > 0 && len(sakau.urls) > 0 {
+			sap.mu.RLock()
+			if len(sap.keys) > 0 && len(sap.urls) > 0 {
 				use = rand.IntN(2)
-			} else if len(sakau.keys) == 0 {
+			} else if len(sap.keys) == 0 {
 				use = 1
-			} // else if len(sakau.urls) == 0 {
+			} // else if len(sap.urls) == 0 {
 			//	use = 0
 			//}
-			sakau.mu.RUnlock()
+			sap.mu.RUnlock()
 		}
 
 		var key, u string
 
-		if sakau.getRandomKey() == "" && forceUseDeepL {
+		if sap.getRandomKey() == "" && forceUseDeepL {
 			use = 2
 		}
 
 		if use == 0 {
-			key = sakau.getRandomKey()
+			key = sap.getRandomKey()
 
 			if !strings.HasSuffix(key, ":fx") && lReq.checkDeepLSourceLangIsAllowed() {
 				p.lReq.ModelType = "prefer_quality_optimized"
@@ -653,14 +655,14 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 					goto reTranslate
 				}
 
-				if sakau.removeKeyOrURL(true, key) {
+				if sap.removeKeyOrURL(true, key) {
 					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
 
 			if lRespCode != http.StatusOK {
-				if sakau.removeKeyOrURL(true, key) {
+				if sap.removeKeyOrURL(true, key) {
 					slog.Warn("remove an unavailable key and retranslate", "key", key, "error message", "HTTP "+strconv.Itoa(lRespCode), "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
@@ -671,7 +673,7 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 			lxResp.Data = lResp.Translations[0].Text
 			lxResp.Alternatives[0] = lResp.Translations[0].Text
 		} else if use == 1 {
-			u = sakau.getRandomURL()
+			u = sap.getRandomURL()
 
 			var lxRespCode int
 			lxResp, lxRespCode, err = p.deepLX(u)
@@ -688,15 +690,15 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 					goto reTranslate
 				}
 
-				if sakau.removeKeyOrURL(false, u) {
+				if sap.removeKeyOrURL(false, u) {
 					slog.Warn("remove an unavailable url and retranslate", "url", u, "error message", err, "text", lxReq.Text, "latency", time.Since(startTime).String())
 				}
 				goto reTranslate
 			}
 		}
 
-		if retargetLanguageName != nil && !retargetLanguageName.MatchString(lxResp.Data) {
-			if use == 1 && sakau.getRandomKey() != "" {
+		if retargetLanguageName != nil && !retargetLanguageName.MatchString(lxResp.Data) && strings.ToUpper(lxReq.TargetLang) != "EN" {
+			if use == 1 && sap.getRandomKey() != "" {
 				//slog.Debug("detected deeplx missing translation, force use deepl translate", "text", lxResp.Data, "url", u, "latency", time.Since(startTime).String())
 				forceUseDeepL = true
 				goto reTranslate
@@ -734,10 +736,10 @@ func (sakau *safeAvailableKeysAndURLs) handleTranslate(retargetLanguageName *reg
 	}
 }
 
-func (sakau *safeAvailableKeysAndURLs) handleCheckAvailable(w http.ResponseWriter, r *http.Request) {
+func (sap *safeAvailableKeysAndURLsAndPosts) handleCheckAvailable(w http.ResponseWriter, r *http.Request) {
 	slog.Debug(r.RemoteAddr + " request for rechecking")
 
-	totalKeys, totalURLs, err := sakau.runCheck(false)
+	totalKeys, totalURLs, err := sap.runCheck(false)
 	if err != nil {
 		if errors.Is(err, errIsChecking) {
 			slog.Warn("currently rechecking")
@@ -749,10 +751,10 @@ func (sakau *safeAvailableKeysAndURLs) handleCheckAvailable(w http.ResponseWrite
 		return
 	}
 
-	sakau.mu.RLock()
-	defer sakau.mu.RUnlock()
+	sap.mu.RLock()
+	defer sap.mu.RUnlock()
 	_, err = w.Write([]byte(fmt.Sprintf("all keys count:%d, available keys count:%d, all urls count:%d, available urls count:%d\n",
-		totalKeys, len(sakau.keys), totalURLs, len(sakau.urls))))
+		totalKeys, len(sap.keys), totalURLs, len(sap.urls))))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		slog.Error("error writing response", "error message", err.Error())
@@ -778,9 +780,6 @@ func (sakau *safeAvailableKeysAndURLs) handleGetAvailableKeysAndURLsCount(w http
 var retargetLanguageName *regexp.Regexp
 
 func main() {
-	deepLClient = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{}}
-	deepLXClient = &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{}}
-
 	enableJSONOutput, enableDebug, targetLanguageName := parseArgs()
 	slog.SetDefault(newLogger(enableJSONOutput, enableDebug))
 
@@ -790,9 +789,15 @@ func main() {
 		retargetLanguageName = nil
 	}
 
-	sakau := &safeAvailableKeysAndURLs{}
+	sap := &safeAvailableKeysAndURLsAndPosts{
+		safeAvailableKeysAndURLs: &safeAvailableKeysAndURLs{},
+		posts: &posts{
+			lClient:  &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{MaxConnsPerHost: 1}},
+			lXClient: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{MaxConnsPerHost: 1}},
+		},
+	}
 
-	_, _, err := sakau.runCheck(false)
+	_, _, err := sap.runCheck(false)
 	if err != nil {
 		return
 	}
@@ -802,7 +807,7 @@ func main() {
 
 	go func() {
 		for range ticker.C {
-			_, _, err = sakau.runCheck(false)
+			_, _, err = sap.runCheck(false)
 			if err != nil {
 				if errors.Is(err, errIsChecking) {
 					slog.Warn("currently rechecking")
@@ -812,9 +817,9 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/translate", sakau.handleTranslate(retargetLanguageName))
-	http.HandleFunc("/check-available", sakau.handleCheckAvailable)
-	http.HandleFunc("/", sakau.handleGetAvailableKeysAndURLsCount)
+	http.HandleFunc("/translate", sap.handleTranslate(retargetLanguageName))
+	http.HandleFunc("/check-available", sap.handleCheckAvailable)
+	http.HandleFunc("/", sap.handleGetAvailableKeysAndURLsCount)
 	err = http.ListenAndServe(":9000", nil)
 
 	slog.Info("server running on http://localhost:9000")
