@@ -22,6 +22,11 @@ import (
 )
 
 var (
+	deepLCanMakeRequest  sync.Map
+	deepLXCanMakeRequest sync.Map
+)
+
+var (
 	errDeepLQuotaExceeded                = errors.New("quota exceeded")
 	errDeepLUnavailableForUnknownReasons = errors.New("unavailable for unknown reasons")
 	errDeepLXResponseEmptyText           = errors.New("empty result")
@@ -98,6 +103,8 @@ func (d *deepLReq) checkDeepLSourceLangIsAllowed() bool {
 }
 
 func (p *posts) deepL(key string) (deepLResp, int, error) {
+	canMakeRequest(true)
+
 	j, err := json.Marshal(p.lReq)
 	if err != nil {
 		return deepLResp{}, 0, err
@@ -119,7 +126,7 @@ func (p *posts) deepL(key string) (deepLResp, int, error) {
 
 	req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
 	req.Header.Set("Content-Type", "application/json")
-
+	
 	resp, err := p.lClient.Do(req)
 	if err != nil {
 		return deepLResp{}, 0, err
@@ -148,6 +155,8 @@ func (p *posts) deepL(key string) (deepLResp, int, error) {
 }
 
 func (p *posts) deepLX(u string) (deepLXResp, int, error) {
+	canMakeRequest(false)
+
 	j, err := json.Marshal(p.lxReq)
 	if err != nil {
 		return deepLXResp{}, 0, err
@@ -229,6 +238,8 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 }
 
 func (p *posts) googleTranslate() (string, error) {
+	canMakeRequest(true)
+
 	var text []string
 	var responseData []interface{}
 	var sb strings.Builder
@@ -535,6 +546,22 @@ func parseKeysAndURLs() ([]string, []string, error) {
 	return keys, urls, nil
 }
 
+func canMakeRequest(isDeepL bool) bool {
+	for {
+		if isDeepL {
+			if v, ok := deepLCanMakeRequest.Load("can make request"); ok && v == true {
+				return true
+			}
+			time.Sleep(time.Second)
+		} else {
+			if v, ok := deepLXCanMakeRequest.Load("can make request"); ok && v == true {
+				return true
+			}
+			time.Sleep(time.Second)
+		}
+	}
+}
+
 func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
@@ -650,8 +677,11 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Debug("deepl connection timeout, clearing http connection pool of deepl and retranslate")
+					deepLCanMakeRequest.Store("can make request", false)
+					time.Sleep(time.Second * 11)
 					p.lClient.CloseIdleConnections()
-					slog.Debug("deepl connection timeout, cleared http connection pool of deepl and retranslate")
+					deepLCanMakeRequest.Store("can make request", true)
 					goto reTranslate
 				}
 
@@ -685,8 +715,11 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Debug("deeplx connection timeout, clearing http connection pool of deeplx and retranslate", "url", u)
+					deepLXCanMakeRequest.Store("can make request", false)
+					time.Sleep(time.Second * 11)
 					p.lXClient.CloseIdleConnections()
-					slog.Debug("deeplx connection timeout, cleared http connection pool of deeplx and retranslate", "url", u)
+					deepLXCanMakeRequest.Store("can make request", true)
 					goto reTranslate
 				}
 
@@ -730,7 +763,6 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 		}
 
 		slog.Debug("translation info", "text", lxResp.Data, "key", key, "url", u, "force used deepl", forceUseDeepL, "used google translate", usedGoogleTranslate, "latency", time.Since(startTime).String(), "client", r.RemoteAddr)
-
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, string(j))
 	}
@@ -780,6 +812,9 @@ func (sakau *safeAvailableKeysAndURLs) handleGetAvailableKeysAndURLsCount(w http
 var retargetLanguageName *regexp.Regexp
 
 func main() {
+	deepLCanMakeRequest.Store("can make request", true)
+	deepLXCanMakeRequest.Store("can make request", true)
+
 	enableJSONOutput, enableDebug, targetLanguageName := parseArgs()
 	slog.SetDefault(newLogger(enableJSONOutput, enableDebug))
 
