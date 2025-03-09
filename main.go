@@ -380,7 +380,15 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Info("deepl connection timeout, recheck")
+					if canMakeRequest(true) {
+						slog.Info("deepl connection timeout, recheck")
+						deepLCanMakeRequest.Store("can make request", false)
+						time.Sleep(time.Second * 11)
+						p.lClient.CloseIdleConnections()
+						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+					} else {
+						time.Sleep(time.Second * 11)
+					}
 					goto deepLFreeReCheck
 				}
 
@@ -402,7 +410,15 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Info("deepl connection timeout, recheck")
+					if canMakeRequest(true) {
+						slog.Info("deepl connection timeout, recheck")
+						deepLCanMakeRequest.Store("can make request", false)
+						time.Sleep(time.Second * 11)
+						p.lClient.CloseIdleConnections()
+						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+					} else {
+						time.Sleep(time.Second * 11)
+					}
 					goto deepLProReCheck
 				}
 
@@ -428,7 +444,15 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(true, k)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Info("deepl connection timeout, recheck")
+					if canMakeRequest(true) {
+						slog.Info("deepl connection timeout, recheck")
+						deepLCanMakeRequest.Store("can make request", false)
+						time.Sleep(time.Second * 11)
+						p.lClient.CloseIdleConnections()
+						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+					} else {
+						time.Sleep(time.Second * 11)
+					}
 					goto deepLReCheck
 				}
 
@@ -452,7 +476,15 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(false, u)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Info("deeplx connection timeout, recheck", "url", u)
+					if canMakeRequest(true) {
+						slog.Info("deeplx connection timeout, recheck")
+						deepLCanMakeRequest.Store("can make request", false)
+						time.Sleep(time.Second * 11)
+						p.lClient.CloseIdleConnections()
+						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+					} else {
+						time.Sleep(time.Second * 11)
+					}
 					goto deepLXReCheck
 				}
 
