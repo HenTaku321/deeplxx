@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -103,7 +102,9 @@ func (d *deepLReq) checkDeepLSourceLangIsAllowed() bool {
 }
 
 func (p *posts) deepL(key string) (deepLResp, int, error) {
-	canMakeRequest(true)
+	for !canMakeRequest(true) {
+		time.Sleep(time.Second)
+	}
 
 	j, err := json.Marshal(p.lReq)
 	if err != nil {
@@ -126,7 +127,7 @@ func (p *posts) deepL(key string) (deepLResp, int, error) {
 
 	req.Header.Set("Authorization", "DeepL-Auth-Key "+key)
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	resp, err := p.lClient.Do(req)
 	if err != nil {
 		return deepLResp{}, 0, err
@@ -155,7 +156,9 @@ func (p *posts) deepL(key string) (deepLResp, int, error) {
 }
 
 func (p *posts) deepLX(u string) (deepLXResp, int, error) {
-	canMakeRequest(false)
+	for !canMakeRequest(false) {
+		time.Sleep(time.Second)
+	}
 
 	j, err := json.Marshal(p.lxReq)
 	if err != nil {
@@ -238,64 +241,57 @@ func (p *posts) checkAvailable(isKey bool, keyOrURL string) (bool, error) {
 }
 
 func (p *posts) googleTranslate() (string, error) {
-	canMakeRequest(true)
-
-	var text []string
-	var responseData []interface{}
-	var sb strings.Builder
-
-	sb.WriteString("https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=")
-	sb.WriteString(p.lxReq.SourceLang)
-	sb.WriteString("&tl=")
-	sb.WriteString(p.lxReq.TargetLang)
-	sb.WriteString("&dt=t")
-	if p.lxReq.TagHandling != "" {
-		sb.WriteString("&format=")
-		sb.WriteString(p.lxReq.TagHandling)
+	for !canMakeRequest(true) {
+		time.Sleep(time.Second)
 	}
-	sb.WriteString("&q=")
-	sb.WriteString(url.QueryEscape(p.lxReq.Text))
 
-	resp, err := p.lClient.Get(sb.String())
+	reqBody := []interface{}{
+		[]interface{}{
+			[]interface{}{
+				p.lxReq.Text,
+			},
+			p.lxReq.SourceLang,
+			p.lxReq.TargetLang,
+		},
+		"te_lib",
+	}
+
+	j, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://translate-pa.googleapis.com/v1/translateHtml", bytes.NewReader(j))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Host", "translate-pa.googleapis.com")
+	req.Header.Set("Origin", "https://translate.google.com")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15")
+	req.Header.Set("Referer", "https://translate.google.com/")
+	req.Header.Set("X-goog-api-key", "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520")
+	req.Header.Set("Content-Type", "application/json+protobuf")
+
+	resp, err := p.lClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.New(resp.Status)
+	}
+
+	res := [][]string{}
+
+	err = json.NewDecoder(resp.Body).Decode(&res)
 	if err != nil {
 		return "", err
 	}
 
-	bReq := strings.Contains(string(body), `<title>Error 400 (Bad Request)`)
-	if resp.StatusCode == http.StatusBadRequest || bReq {
-		return "", errors.New("400 Bad Request")
-	}
-
-	err = json.Unmarshal(body, &responseData)
-	if err != nil {
-		return "", err
-	}
-
-	if len(responseData) > 0 {
-		r := responseData[0]
-		if inner, ok := r.([]interface{}); ok {
-			for _, slice := range inner {
-				for _, translatedText := range slice.([]interface{}) {
-					text = append(text, fmt.Sprintf("%v", translatedText))
-					break
-				}
-			}
-		} else if r == nil { // html only
-			return p.lxReq.Text, nil
-		} else {
-			return "", fmt.Errorf("unexpected response structure: %v", r)
-		}
-		cText := strings.Join(text, "")
-		return cText, nil
-	} else {
-		return "", err
-	}
+	return res[0][0], nil
 }
 
 func (sakau *safeAvailableKeysAndURLs) removeKeyOrURL(isKey bool, keyOrURL string) bool {
@@ -384,7 +380,7 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Debug("deepl connection timeout, recheck")
+					slog.Info("deepl connection timeout, recheck")
 					goto deepLFreeReCheck
 				}
 
@@ -406,7 +402,7 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(true, key)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Debug("deepl connection timeout, recheck")
+					slog.Info("deepl connection timeout, recheck")
 					goto deepLProReCheck
 				}
 
@@ -432,7 +428,7 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(true, k)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Debug("deepl connection timeout, recheck")
+					slog.Info("deepl connection timeout, recheck")
 					goto deepLReCheck
 				}
 
@@ -456,7 +452,7 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			isAvailable, err := p.checkAvailable(false, u)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Debug("deeplx connection timeout, recheck", "url", u)
+					slog.Info("deeplx connection timeout, recheck", "url", u)
 					goto deepLXReCheck
 				}
 
@@ -547,19 +543,16 @@ func parseKeysAndURLs() ([]string, []string, error) {
 }
 
 func canMakeRequest(isDeepL bool) bool {
-	for {
-		if isDeepL {
-			if v, ok := deepLCanMakeRequest.Load("can make request"); ok && v == true {
-				return true
-			}
-			time.Sleep(time.Second)
-		} else {
-			if v, ok := deepLXCanMakeRequest.Load("can make request"); ok && v == true {
-				return true
-			}
-			time.Sleep(time.Second)
+	if isDeepL {
+		if v, ok := deepLCanMakeRequest.Load("can make request"); ok && v == true {
+			return true
+		}
+	} else {
+		if v, ok := deepLXCanMakeRequest.Load("can make request"); ok && v == true {
+			return true
 		}
 	}
+	return false
 }
 
 func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageName *regexp.Regexp) http.HandlerFunc {
@@ -677,11 +670,15 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Debug("deepl connection timeout, clearing http connection pool of deepl and retranslate")
-					deepLCanMakeRequest.Store("can make request", false)
-					time.Sleep(time.Second * 11)
-					p.lClient.CloseIdleConnections()
-					deepLCanMakeRequest.Store("can make request", true)
+					if canMakeRequest(true) {
+						slog.Info("deepl connection timeout, clearing http connection pool of deepl and retranslate")
+						deepLCanMakeRequest.Store("can make request", false)
+						time.Sleep(time.Second * 11)
+						p.lClient.CloseIdleConnections()
+						deepLCanMakeRequest.Store("can make request", true)
+					} else {
+						time.Sleep(time.Second * 11)
+					}
 					goto reTranslate
 				}
 
@@ -715,11 +712,15 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					slog.Debug("deeplx connection timeout, clearing http connection pool of deeplx and retranslate", "url", u)
-					deepLXCanMakeRequest.Store("can make request", false)
-					time.Sleep(time.Second * 11)
-					p.lXClient.CloseIdleConnections()
-					deepLXCanMakeRequest.Store("can make request", true)
+					if canMakeRequest(false) {
+						slog.Info("deeplx connection timeout, clearing http connection pool of deeplx and retranslate", "url", u)
+						deepLXCanMakeRequest.Store("can make request", false)
+						time.Sleep(time.Second * 11)
+						p.lXClient.CloseIdleConnections()
+						deepLXCanMakeRequest.Store("can make request", true)
+					} else {
+						time.Sleep(time.Second * 11)
+					}
 					goto reTranslate
 				}
 
