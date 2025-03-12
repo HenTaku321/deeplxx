@@ -381,11 +381,11 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					if canMakeRequest(true) {
-						slog.Info("deepl connection timeout, recheck")
 						deepLCanMakeRequest.Store("can make request", false)
+						slog.Info("deepl connection timeout, recheck")
 						time.Sleep(time.Second * 11)
 						p.lClient.CloseIdleConnections()
-						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+						deepLCanMakeRequest.Store("can make request", true)
 					} else {
 						time.Sleep(time.Second * 11)
 					}
@@ -411,11 +411,11 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					if canMakeRequest(true) {
-						slog.Info("deepl connection timeout, recheck")
 						deepLCanMakeRequest.Store("can make request", false)
+						slog.Info("deepl connection timeout, recheck")
 						time.Sleep(time.Second * 11)
 						p.lClient.CloseIdleConnections()
-						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+						deepLCanMakeRequest.Store("can make request", true)
 					} else {
 						time.Sleep(time.Second * 11)
 					}
@@ -445,11 +445,11 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					if canMakeRequest(true) {
-						slog.Info("deepl connection timeout, recheck")
 						deepLCanMakeRequest.Store("can make request", false)
+						slog.Info("deepl connection timeout, recheck")
 						time.Sleep(time.Second * 11)
 						p.lClient.CloseIdleConnections()
-						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+						deepLCanMakeRequest.Store("can make request", true)
 					} else {
 						time.Sleep(time.Second * 11)
 					}
@@ -477,11 +477,11 @@ func (sap *safeAvailableKeysAndURLsAndPosts) runCheck(needOutput bool) (int, int
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					if canMakeRequest(true) {
+						deepLXCanMakeRequest.Store("can make request", false)
 						slog.Info("deeplx connection timeout, recheck")
-						deepLCanMakeRequest.Store("can make request", false)
 						time.Sleep(time.Second * 11)
 						p.lClient.CloseIdleConnections()
-						deepLCanMakeRequest.Store("deepl connection timeout, recheck", true)
+						deepLXCanMakeRequest.Store("can make request", true)
 					} else {
 						time.Sleep(time.Second * 11)
 					}
@@ -703,8 +703,8 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					if canMakeRequest(true) {
-						slog.Info("deepl connection timeout, clearing http connection pool of deepl and retranslate")
 						deepLCanMakeRequest.Store("can make request", false)
+						slog.Info("deepl connection timeout, clearing http connection pool of deepl and retranslate")
 						time.Sleep(time.Second * 11)
 						p.lClient.CloseIdleConnections()
 						deepLCanMakeRequest.Store("can make request", true)
@@ -745,8 +745,8 @@ func (sap *safeAvailableKeysAndURLsAndPosts) handleTranslate(retargetLanguageNam
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					if canMakeRequest(false) {
-						slog.Info("deeplx connection timeout, clearing http connection pool of deeplx and retranslate", "url", u)
 						deepLXCanMakeRequest.Store("can make request", false)
+						slog.Info("deeplx connection timeout, clearing http connection pool of deeplx and retranslate", "url", u)
 						time.Sleep(time.Second * 11)
 						p.lXClient.CloseIdleConnections()
 						deepLXCanMakeRequest.Store("can make request", true)
